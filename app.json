@@ -38,6 +38,27 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Food Journey needs your photos to attach them to memories.",
+          "cameraPermission": "Food Journey needs your camera to capture food and vibes."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Food Journey uses your location to find nearby restaurants."
+        }
+      ],
+      [
+        "@rnmapbox/maps",
+        {
+          "RNMapboxMapsVersion": "11.8.0",
+          "RNMapboxMapsDownloadToken": "pk.YOUR_MAPBOX_TOKEN_HERE"
+        }
       ]
     ],
     "experiments": {

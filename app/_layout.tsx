@@ -1,24 +1,59 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Stack } from 'expo-router';
+import { useEffect } from 'react';
+import { Stack, router, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import 'react-native-reanimated';
+import { Colors } from '@/theme/colors';
+import { AuthProvider, useAuth } from '@/context/AuthContext';
+import { DataProvider } from '@/context/DataContext';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
+// Inner component so it can consume AuthContext
+function RootLayoutNav() {
+  const { session, loading } = useAuth();
+  const segments = useSegments();
 
-export const unstable_settings = {
-  anchor: '(tabs)',
-};
+  useEffect(() => {
+    if (loading) return;
 
-export default function RootLayout() {
-  const colorScheme = useColorScheme();
+    const inAuthGroup = segments[0] === 'auth';
+
+    if (!session && !inAuthGroup) {
+      // Not logged in — send to login
+      router.replace('/auth/login');
+    } else if (session && inAuthGroup) {
+      // Logged in but still on auth screen — send to app
+      router.replace('/(tabs)');
+    }
+  }, [session, loading, segments]);
 
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+    <>
+      <Stack
+        screenOptions={{
+          headerShown: false,
+          contentStyle: { backgroundColor: Colors.background },
+          animation: 'slide_from_right',
+        }}
+      >
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="auth" />
+        <Stack.Screen
+          name="entry/[id]"
+          options={{
+            animation: 'fade',
+            animationDuration: 200,
+          }}
+        />
       </Stack>
-      <StatusBar style="auto" />
-    </ThemeProvider>
+      <StatusBar style="light" />
+    </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <AuthProvider>
+      <DataProvider>
+        <RootLayoutNav />
+      </DataProvider>
+    </AuthProvider>
   );
 }
