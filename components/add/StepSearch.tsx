@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,28 +13,96 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import { Colors } from '@/theme/colors';
-import { type SearchResult } from '@/data/mockData';
+import { type SearchResult, type Memory } from '@/data/mockData';
 import { useMemories, useWantToTry } from '@/context/DataContext';
 import { searchFoursquarePlaces } from '@/lib/foursquare';
 
-type SearchTab = 'all' | 'nearby' | 'visited';
+const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
+const SEARCH_BOX_BASE = 'https://api.mapbox.com/search/searchbox/v1';
+
+interface LocationSuggestion {
+  mapbox_id: string;
+  name: string;
+  context: string; // full formatted address shown in dropdown
+}
+
+function makeSessionToken(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+async function searchLocations(query: string, sessionToken: string): Promise<LocationSuggestion[]> {
+  if (!query.trim() || !MAPBOX_TOKEN) return [];
+  const params = new URLSearchParams({
+    q: query,
+    access_token: MAPBOX_TOKEN,
+    session_token: sessionToken,
+    types: 'country,region,postcode,place,locality,neighborhood,address,street',
+    limit: '5',
+    language: 'en',
+  });
+  try {
+    const res = await fetch(`${SEARCH_BOX_BASE}/suggest?${params}`);
+    if (!res.ok) return [];
+    const json = await res.json();
+    return (json.suggestions ?? []).map((s: any) => ({
+      mapbox_id: s.mapbox_id,
+      name: s.name,
+      context: s.full_address ?? s.place_formatted ?? s.name,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function retrieveLocation(
+  mapbox_id: string,
+  sessionToken: string,
+): Promise<{ lat: number; lng: number; label: string } | null> {
+  if (!MAPBOX_TOKEN) return null;
+  const params = new URLSearchParams({ access_token: MAPBOX_TOKEN, session_token: sessionToken });
+  try {
+    const res = await fetch(`${SEARCH_BOX_BASE}/retrieve/${mapbox_id}?${params}`);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const feature = json.features?.[0];
+    if (!feature) return null;
+    const [lng, lat] = feature.geometry.coordinates;
+    const label =
+      feature.properties.full_address ??
+      feature.properties.place_formatted ??
+      feature.properties.name;
+    return { lat, lng, label };
+  } catch {
+    return null;
+  }
+}
+
+type SearchTab = 'all' | 'visited';
 
 interface StepSearchProps {
   onSelect: (result: SearchResult) => void;
+  onReturnVisit?: (result: SearchResult, existingMemory: Memory) => void;
+  onQuickCheckin?: (existingMemory: Memory) => void;
 }
 
-export default function StepSearch({ onSelect }: StepSearchProps) {
+export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: StepSearchProps) {
   const [query, setQuery] = useState('');
   const [locationInput, setLocationInput] = useState('');
   const [editingLocation, setEditingLocation] = useState(false);
-  const [activeTab, setActiveTab] = useState<SearchTab>('nearby');
+  const [activeTab, setActiveTab] = useState<SearchTab>('all');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [locationLoading, setLocationLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [locationLabel, setLocationLabel] = useState<string>('Current Location');
+  const [locationSuggestions, setLocationSuggestions] = useState<LocationSuggestion[]>([]);
   const locationInputRef = useRef<TextInput>(null);
+  const listRef = useRef<FlatList>(null);
+  const sessionTokenRef = useRef<string>(makeSessionToken());
 
   const { isBookmarked, toggleBookmark, entries: wantToTryEntries } = useWantToTry();
   const { memories } = useMemories();
@@ -52,6 +120,19 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
   useEffect(() => {
     requestCurrentLocation();
   }, []);
+
+  // Debounced location autocomplete — fires 300ms after typing in location input
+  useEffect(() => {
+    if (!editingLocation || !locationInput.trim()) {
+      setLocationSuggestions([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      const suggestions = await searchLocations(locationInput, sessionTokenRef.current);
+      setLocationSuggestions(suggestions);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [locationInput, editingLocation]);
 
   // Debounced search — fires 400ms after query or location changes
   useEffect(() => {
@@ -90,17 +171,34 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        // Permission denied — fall back to no location, let user type one
         setLocationLabel('Set location');
         setEditingLocation(true);
         return;
       }
+      // Try last known location first for an instant result
+      const lastKnown = await Location.getLastKnownPositionAsync();
+      if (lastKnown) {
+        setUserLocation({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+        setLocationLabel('Current Location');
+        setActiveTab('all');
+        setLocationLoading(false);
+        // Quietly upgrade to fresh GPS in the background
+        Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).then((fresh) => {
+          setUserLocation({ lat: fresh.coords.latitude, lng: fresh.coords.longitude });
+        }).catch(() => {});
+        return;
+      }
+      // No cached location — get fresh (use Balanced for speed, upgrade after)
       const loc = await Location.getCurrentPositionAsync({
         accuracy: Location.Accuracy.Balanced,
       });
       setUserLocation({ lat: loc.coords.latitude, lng: loc.coords.longitude });
       setLocationLabel('Current Location');
-      setActiveTab('nearby');
+      setActiveTab('all');
+      // Upgrade to high accuracy in background
+      Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).then((fresh) => {
+        setUserLocation({ lat: fresh.coords.latitude, lng: fresh.coords.longitude });
+      }).catch(() => {});
     } catch {
       setLocationLabel('Set location');
       setEditingLocation(true);
@@ -109,7 +207,6 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
     }
   };
 
-  // Geocode a typed city/address
   const handleLocationSubmit = async () => {
     const input = locationInput.trim();
     if (!input) return;
@@ -118,16 +215,23 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
     setLocationLoading(true);
     setSearchError(null);
     try {
-      const geocoded = await Location.geocodeAsync(input);
-      if (!geocoded || geocoded.length === 0) {
-        Alert.alert('Location not found', `Couldn't find "${input}". Try a city name.`);
+      const suggestions = await searchLocations(input, sessionTokenRef.current);
+      if (!suggestions.length) {
+        Alert.alert('Location not found', `Couldn't find "${input}". Try a different format.`);
         setEditingLocation(true);
         return;
       }
-      const { latitude, longitude } = geocoded[0];
-      setUserLocation({ lat: latitude, lng: longitude });
-      setLocationLabel(input);
-      setActiveTab('nearby');
+      const place = await retrieveLocation(suggestions[0].mapbox_id, sessionTokenRef.current);
+      if (!place) {
+        Alert.alert('Location not found', `Couldn't resolve "${input}". Try a different format.`);
+        setEditingLocation(true);
+        return;
+      }
+      sessionTokenRef.current = makeSessionToken();
+      setUserLocation({ lat: place.lat, lng: place.lng });
+      setLocationLabel(suggestions[0].context || input);
+      setLocationInput('');
+      setActiveTab('all');
     } catch (err: any) {
       Alert.alert('Location error', err.message ?? 'Could not find that location.');
       setEditingLocation(true);
@@ -136,7 +240,27 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
     }
   };
 
+  const handleSelectSuggestion = useCallback(async (suggestion: LocationSuggestion) => {
+    Keyboard.dismiss();
+    setLocationSuggestions([]);
+    setEditingLocation(false);
+    setLocationInput('');
+    setLocationLoading(true);
+    try {
+      const place = await retrieveLocation(suggestion.mapbox_id, sessionTokenRef.current);
+      if (place) {
+        sessionTokenRef.current = makeSessionToken();
+        setUserLocation({ lat: place.lat, lng: place.lng });
+        setLocationLabel(suggestion.context || suggestion.name);
+        setActiveTab('all');
+      }
+    } finally {
+      setLocationLoading(false);
+    }
+  }, []);
+
   const handleLocationPillTap = () => {
+    sessionTokenRef.current = makeSessionToken();
     setLocationInput('');
     setEditingLocation(true);
     setTimeout(() => locationInputRef.current?.focus(), 100);
@@ -154,12 +278,56 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
     return results;
   }, [results, activeTab]);
 
+  // Scroll results list back to top whenever results change
+  useEffect(() => {
+    if (displayedResults.length > 0) {
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    }
+  }, [displayedResults]);
+
   const renderItem = ({ item }: { item: SearchResult }) => {
     const bookmarked = isBookmarked(item.name, item.address);
     return (
       <TouchableOpacity
         style={styles.resultRow}
-        onPress={() => { Keyboard.dismiss(); onSelect(item); }}
+        onPress={() => {
+          Keyboard.dismiss();
+          // Check for matches — exact (same name+address) or name-only (chain at different location)
+          const exactMatch = memories.find(
+            (m) => m.restaurantName.toLowerCase() === item.name.toLowerCase()
+              && m.address === item.address
+          );
+          const nameOnlyMatch = !exactMatch && memories.find(
+            (m) => m.restaurantName.toLowerCase() === item.name.toLowerCase()
+              && m.address !== item.address
+          );
+
+          if (exactMatch && onReturnVisit) {
+            // Same restaurant, same address — Went Again vs Tried Something New
+            Alert.alert(
+              'Been here before!',
+              `You've visited ${item.name} ${1 + (exactMatch.visits?.length ?? 0)} time${(exactMatch.visits?.length ?? 0) > 0 ? 's' : ''}.`,
+              [
+                { text: 'Went Again', onPress: () => onQuickCheckin?.(exactMatch) },
+                { text: 'Tried Something New', onPress: () => onReturnVisit(item, exactMatch) },
+                { text: 'Cancel', style: 'cancel' },
+              ]
+            );
+          } else if (nameOnlyMatch && onReturnVisit) {
+            // Same name, different address — chain location
+            Alert.alert(
+              'Looks familiar!',
+              `You've been to ${item.name} at a different location.`,
+              [
+                { text: 'Return Visit', onPress: () => onReturnVisit(item, nameOnlyMatch) },
+                { text: 'New Location', onPress: () => onSelect(item) },
+                { text: 'Cancel', style: 'cancel' },
+              ]
+            );
+          } else {
+            onSelect(item);
+          }
+        }}
       >
         <View style={styles.leftCol}>
           <Ionicons name="location-outline" size={20} color={Colors.textSecondary} />
@@ -263,8 +431,24 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
         </TouchableOpacity>
       )}
 
+      {/* Location autocomplete suggestions */}
+      {editingLocation && locationSuggestions.length > 0 && (
+        <View style={styles.suggestionsWrap}>
+          {locationSuggestions.map((s) => (
+            <TouchableOpacity
+              key={s.mapbox_id}
+              style={styles.suggestionRow}
+              onPress={() => handleSelectSuggestion(s)}
+            >
+              <Ionicons name="location-outline" size={16} color={Colors.purple} />
+              <Text style={styles.suggestionText} numberOfLines={1}>{s.context}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
       <View style={styles.tabRow}>
-        {(['all', 'nearby', 'visited'] as SearchTab[]).map((tab) => (
+        {(['all', 'visited'] as SearchTab[]).map((tab) => (
           <TouchableOpacity
             key={tab}
             style={[styles.tab, activeTab === tab && styles.tabActive]}
@@ -290,6 +474,7 @@ export default function StepSearch({ onSelect }: StepSearchProps) {
       )}
 
       <FlatList
+        ref={listRef}
         data={displayedResults}
         renderItem={renderItem}
         keyExtractor={(item) => item.id}
@@ -399,4 +584,27 @@ const styles = StyleSheet.create({
   resultName: { color: Colors.textPrimary, fontSize: 15, fontWeight: '600', marginBottom: 2 },
   resultAddress: { color: Colors.textSecondary, fontSize: 12 },
   resultRight: { alignItems: 'center', marginLeft: 10 },
+  suggestionsWrap: {
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.purple,
+    borderRadius: 12,
+    marginBottom: 12,
+    marginTop: -4,
+    overflow: 'hidden',
+  },
+  suggestionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.surfaceBorder,
+  },
+  suggestionText: {
+    flex: 1,
+    color: Colors.textPrimary,
+    fontSize: 13,
+  },
 });

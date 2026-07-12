@@ -3,23 +3,40 @@ import { View, StyleSheet } from 'react-native';
 import MemoryCard, { CARD_GAP, CARD_PADDING } from './MemoryCard';
 import type { Memory } from '@/data/mockData';
 
-interface MemoryGridProps {
-  memories: Memory[];
+export interface GroupedMemory {
+  memory: Memory;        // representative memory (most recent)
+  visitCount: number;    // total visits across all locations
+  overrideScore: number; // averaged composite score
 }
 
-export default function MemoryGrid({ memories }: MemoryGridProps) {
+interface MemoryGridProps {
+  memories?: Memory[];
+  groups?: GroupedMemory[];
+}
+
+export default function MemoryGrid({ memories, groups }: MemoryGridProps) {
+  // If groups are provided, use them; otherwise fall back to flat memory list
+  const items: GroupedMemory[] = groups
+    ? groups
+    : (memories ?? []).map((m) => ({ memory: m, visitCount: 1, overrideScore: m.compositeScore }));
+
   // Build rows of 2
-  const rows: Memory[][] = [];
-  for (let i = 0; i < memories.length; i += 2) {
-    rows.push(memories.slice(i, i + 2));
+  const rows: GroupedMemory[][] = [];
+  for (let i = 0; i < items.length; i += 2) {
+    rows.push(items.slice(i, i + 2));
   }
 
   return (
     <View style={styles.grid}>
       {rows.map((row, i) => (
         <View key={i} style={styles.row}>
-          {row.map((memory) => (
-            <MemoryCard key={memory.id} memory={memory} />
+          {row.map((item) => (
+            <MemoryCard
+              key={item.memory.id}
+              memory={item.memory}
+              visitCount={item.visitCount}
+              overrideScore={item.overrideScore}
+            />
           ))}
         </View>
       ))}

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { View, StyleSheet, Dimensions, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, Dimensions, ScrollView } from 'react-native';
 import { Image } from 'expo-image';
 import { Colors } from '@/theme/colors';
 
@@ -8,9 +8,16 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 interface PhotoCarouselProps {
   photos: string[];
   height?: number;
+  photoDates?: Record<string, string>; // photo URL → ISO date string
 }
 
-export default function PhotoCarousel({ photos, height = 350 }: PhotoCarouselProps) {
+function formatShortDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const date = new Date(y, m - 1, d);
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+export default function PhotoCarousel({ photos, height = 350, photoDates }: PhotoCarouselProps) {
   const [activeIndex, setActiveIndex] = useState(0);
 
   const handleScroll = (event: any) => {
@@ -29,12 +36,20 @@ export default function PhotoCarousel({ photos, height = 350 }: PhotoCarouselPro
         scrollEventThrottle={16}
       >
         {photos.map((uri, i) => (
-          <Image
-            key={i}
-            source={{ uri }}
-            style={[styles.image, { height }]}
-            contentFit="cover"
-          />
+          <View key={i} style={{ width: SCREEN_WIDTH, height }}>
+            <Image
+              source={{ uri }}
+              style={[styles.image, { height }]}
+              contentFit="cover"
+            />
+            {photoDates?.[uri] && (
+              <View style={styles.dateBadge}>
+                <Text style={styles.dateBadgeText}>
+                  {formatShortDate(photoDates[uri])}
+                </Text>
+              </View>
+            )}
+          </View>
         ))}
       </ScrollView>
       {photos.length > 1 && (
@@ -58,6 +73,20 @@ const styles = StyleSheet.create({
   },
   image: {
     width: SCREEN_WIDTH,
+  },
+  dateBadge: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+  },
+  dateBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '600',
   },
   dots: {
     position: 'absolute',

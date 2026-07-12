@@ -49,21 +49,16 @@ function base64ToUint8Array(base64: string): Uint8Array {
 export async function uploadPhoto(localUri: string, userId: string): Promise<string> {
   if (!localUri) throw new Error('No photo URI provided');
 
-  console.log('[uploadPhoto] Starting upload for URI:', localUri.substring(0, 80));
-
   // Normalize URI — on Android, content:// URIs need to be copied to a cache file first
   let fileUri = localUri;
   if (localUri.startsWith('content://')) {
-    console.log('[uploadPhoto] Android content:// URI — copying to cache...');
     const destUri = `${FileSystem.cacheDirectory}upload_${Date.now()}.jpg`;
     await FileSystem.copyAsync({ from: localUri, to: destUri });
     fileUri = destUri;
-    console.log('[uploadPhoto] Cached at:', destUri);
   }
 
   // Verify the file exists
   const fileInfo = await FileSystem.getInfoAsync(fileUri);
-  console.log('[uploadPhoto] File info:', JSON.stringify(fileInfo));
   if (!fileInfo.exists) {
     throw new Error(`File does not exist at URI: ${fileUri}`);
   }
@@ -72,14 +67,11 @@ export async function uploadPhoto(localUri: string, userId: string): Promise<str
   const rawExt = fileUri.split('.').pop()?.toLowerCase().split('?')[0] ?? 'jpg';
   const ext = ['jpg', 'jpeg', 'png', 'heic', 'webp'].includes(rawExt) ? rawExt : 'jpg';
   const contentType = ext === 'png' ? 'image/png' : 'image/jpeg';
-  console.log('[uploadPhoto] ext:', ext, '| contentType:', contentType);
 
   // Unique storage path per user
   const filename = `${userId}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
-  console.log('[uploadPhoto] Storage path:', filename);
 
   // Read the file as a base64 string
-  console.log('[uploadPhoto] Reading file as base64...');
   let base64: string;
   try {
     base64 = await FileSystem.readAsStringAsync(fileUri, {
@@ -92,7 +84,6 @@ export async function uploadPhoto(localUri: string, userId: string): Promise<str
   if (!base64 || base64.length === 0) {
     throw new Error('File read returned empty base64 — the file may be missing or inaccessible');
   }
-  console.log('[uploadPhoto] base64 string length:', base64.length);
 
   // Decode base64 → Uint8Array (no external dependencies)
   let bytes: Uint8Array;
@@ -101,33 +92,42 @@ export async function uploadPhoto(localUri: string, userId: string): Promise<str
   } catch (decErr: any) {
     throw new Error(`base64 decode failed: ${decErr.message}`);
   }
-  console.log('[uploadPhoto] Decoded bytes:', bytes.byteLength);
 
   if (bytes.byteLength === 0) {
     throw new Error('Decoded image has 0 bytes — file may be corrupt or unreadable');
   }
 
-  // Upload raw bytes to Supabase Storage
-  console.log('[uploadPhoto] Uploading to Supabase...');
-  const { data, error } = await supabase.storage
-    .from('memory-photos')
-    .upload(filename, bytes, {
-      contentType,
-      upsert: false,
-    });
+  // Upload raw bytes to Supabase Storage with retry logic for weak connections
+  const MAX_RETRIES = 2;
+  let lastError: Error | null = null;
 
-  if (error) {
-    console.error('[uploadPhoto] Supabase upload error:', error);
-    throw new Error(`Supabase upload failed: ${error.message}`);
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const { data, error } = await supabase.storage
+        .from('memory-photos')
+        .upload(filename, bytes, {
+          contentType,
+          upsert: false,
+        });
+
+      if (error) {
+        throw new Error(`Supabase upload failed: ${error.message}`);
+      }
+
+      // Return the public URL
+      const { data: urlData } = supabase.storage
+        .from('memory-photos')
+        .getPublicUrl(data.path);
+
+      return urlData.publicUrl;
+    } catch (uploadErr: any) {
+      lastError = uploadErr;
+      if (attempt < MAX_RETRIES) {
+        // Wait before retrying (1s, then 2s)
+        await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 1000));
+      }
+    }
   }
 
-  console.log('[uploadPhoto] Upload success! path:', data.path);
-
-  // Return the public URL
-  const { data: urlData } = supabase.storage
-    .from('memory-photos')
-    .getPublicUrl(data.path);
-
-  console.log('[uploadPhoto] Public URL:', urlData.publicUrl);
-  return urlData.publicUrl;
+  throw lastError ?? new Error('Upload failed after retries');
 }

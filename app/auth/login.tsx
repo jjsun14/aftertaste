@@ -13,8 +13,16 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import * as Linking from 'expo-linking';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/theme/colors';
+import type { ScorePreference } from '@/data/mockData';
+
+GoogleSignin.configure({
+  iosClientId: '80221240861-u2rdcjl4145c1pe5ujqbm8v5b9vr4u0r.apps.googleusercontent.com',
+});
 
 export default function LoginScreen() {
   const insets = useSafeAreaInsets();
@@ -28,7 +36,10 @@ export default function LoginScreen() {
   // Signup-only fields
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
+  const [usernameInput, setUsernameInput] = useState('');
   const [phone, setPhone] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [scorePref, setScorePref] = useState<ScorePreference>('food_first');
 
   const [loading, setLoading] = useState(false);
 
@@ -37,10 +48,13 @@ export default function LoginScreen() {
     setMode(next);
     setEmail('');
     setPassword('');
+    setConfirmPassword('');
     setShowPassword(false);
     setFirstName('');
     setLastName('');
+    setUsernameInput('');
     setPhone('');
+    setScorePref('food_first');
   };
 
   const handleEmailAuth = async () => {
@@ -54,8 +68,20 @@ export default function LoginScreen() {
         Alert.alert('Missing name', 'Please enter your first name.');
         return;
       }
+      if (!usernameInput.trim()) {
+        Alert.alert('Missing username', 'Please choose a username.');
+        return;
+      }
+      if (usernameInput.trim().length < 3) {
+        Alert.alert('Username too short', 'Username must be at least 3 characters.');
+        return;
+      }
       if (password.length < 6) {
         Alert.alert('Weak password', 'Password must be at least 6 characters.');
+        return;
+      }
+      if (password !== confirmPassword) {
+        Alert.alert('Passwords don\'t match', 'Please make sure both passwords match.');
         return;
       }
     }
@@ -64,36 +90,66 @@ export default function LoginScreen() {
     try {
       if (mode === 'signup') {
         const displayName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
+        const desiredUsername = usernameInput.trim().toLowerCase();
+
+        // Check username availability BEFORE creating the account
+        // Uses an RPC function (SECURITY DEFINER) so it works without auth
+        const { data: isAvailable, error: rpcError } = await supabase.rpc(
+          'check_username_available',
+          { desired_username: desiredUsername },
+        );
+        if (rpcError) {
+          console.error('Username check RPC error:', JSON.stringify(rpcError));
+          throw new Error('Could not verify username availability. Please try again.');
+        }
+        if (isAvailable === false) {
+          Alert.alert('Username Taken', 'That username is already in use. Please choose a different one.');
+          setLoading(false);
+          return;
+        }
+
+        // Username is available — now create the account
+        // Redirect URL for the verification email — opens the app via deep link
+        const redirectUrl = Linking.createURL('/');
 
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
           options: {
+            emailRedirectTo: redirectUrl,
             data: {
               display_name: displayName,
               first_name: firstName.trim(),
               last_name: lastName.trim(),
               phone: phone.trim(),
+              username: desiredUsername,
+              profile_completed: true,
             },
           },
         });
         if (error) throw error;
 
-        // Also write to profiles table
+        // Store signup profile data so we can write it after email verification
+        // (the user won't have a session until they verify, so RLS blocks writes now)
         if (data.user) {
-          await supabase.from('profiles').upsert({
+          const { error: profileError } = await supabase.from('profiles').upsert({
             id: data.user.id,
             display_name: displayName,
             first_name: firstName.trim(),
             last_name: lastName.trim(),
             phone: phone.trim(),
+            username: desiredUsername,
+            score_preference: scorePref,
           });
+          if (profileError) {
+            console.error('Profile upsert error (pre-verify):', JSON.stringify(profileError));
+          }
         }
 
         Alert.alert(
           'Check your email',
-          'We sent you a confirmation link. Please verify your email then log in.',
-          [{ text: 'OK', onPress: () => switchMode('login') }]
+          'We sent you a confirmation link. Tap it to verify and you\'ll be signed in automatically.',
+          [{ text: 'OK' }]
         );
       } else {
         const { error } = await supabase.auth.signInWithPassword({
@@ -122,9 +178,9 @@ export default function LoginScreen() {
       >
         {/* Logo / Title */}
         <View style={styles.header}>
-          <Text style={styles.logo}>🍽️</Text>
-          <Text style={styles.appName}>Food Journey</Text>
-          <Text style={styles.tagline}>Your personal food memory journal</Text>
+          <Text style={styles.appName}>
+            Aftertaste<Text style={styles.dot}>.</Text>
+          </Text>
         </View>
 
         {/* Mode toggle */}
@@ -177,6 +233,21 @@ export default function LoginScreen() {
               </View>
             </View>
 
+            {/* Username */}
+            <View style={styles.inputWrap}>
+              <Text style={styles.atPrefix}>@</Text>
+              <TextInput
+                style={styles.input}
+                placeholder="Choose a username"
+                placeholderTextColor={Colors.textMuted}
+                value={usernameInput}
+                onChangeText={(t) => setUsernameInput(t.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+            </View>
+            <Text style={styles.usernameHint}>Friends can find you by your username</Text>
+
             {/* Phone number */}
             <View style={styles.inputWrap}>
               <Ionicons name="call-outline" size={18} color={Colors.textSecondary} style={styles.inputIcon} />
@@ -190,6 +261,40 @@ export default function LoginScreen() {
                 autoCorrect={false}
               />
             </View>
+
+            {/* Score preference */}
+            <Text style={styles.sectionLabel}>HOW DO YOU JUDGE A PLACE?</Text>
+            <TouchableOpacity
+              style={[styles.prefCard, scorePref === 'food_first' && styles.prefCardActive]}
+              onPress={() => setScorePref('food_first')}
+              activeOpacity={0.85}
+            >
+              <View style={styles.prefHeaderRow}>
+                <Text style={styles.prefTitle}>Food First</Text>
+                {scorePref === 'food_first' && (
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />
+                )}
+              </View>
+              <Text style={styles.prefBody}>
+                Taste makes or breaks it for me — vibe and value are secondary.
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.prefCard, scorePref === 'full_picture' && styles.prefCardActive]}
+              onPress={() => setScorePref('full_picture')}
+              activeOpacity={0.85}
+            >
+              <View style={styles.prefHeaderRow}>
+                <Text style={styles.prefTitle}>Full Picture</Text>
+                {scorePref === 'full_picture' && (
+                  <Ionicons name="checkmark-circle" size={18} color={Colors.primary} />
+                )}
+              </View>
+              <Text style={styles.prefBody}>
+                I care about the whole experience — food, atmosphere, and whether it was worth it.
+              </Text>
+            </TouchableOpacity>
+            <Text style={styles.usernameHint}>You can't change this later — pick what feels right.</Text>
           </>
         )}
 
@@ -229,6 +334,22 @@ export default function LoginScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* Confirm Password (signup only) */}
+        {mode === 'signup' && (
+          <View style={styles.inputWrap}>
+            <Ionicons name="lock-closed-outline" size={18} color={Colors.textSecondary} style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder="Confirm password"
+              placeholderTextColor={Colors.textMuted}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              secureTextEntry={!showPassword}
+              autoCapitalize="none"
+            />
+          </View>
+        )}
+
         {/* Submit */}
         <TouchableOpacity style={styles.primaryBtn} onPress={handleEmailAuth} disabled={loading}>
           {loading ? (
@@ -247,17 +368,91 @@ export default function LoginScreen() {
           <View style={styles.dividerLine} />
         </View>
 
-        {/* Social — stubbed until dev build */}
-        <TouchableOpacity style={styles.socialBtn} disabled>
-          <Ionicons name="logo-google" size={20} color={Colors.textSecondary} />
+        {/* Google Sign In */}
+        <TouchableOpacity
+          style={styles.socialBtn}
+          onPress={async () => {
+            try {
+              const response = await GoogleSignin.signIn();
+              if (response.data?.idToken) {
+                const { error } = await supabase.auth.signInWithIdToken({
+                  provider: 'google',
+                  token: response.data.idToken,
+                });
+                if (error) throw error;
+
+                // Store Google name in user metadata for the complete-profile screen
+                const googleName = response.data.user?.name ?? '';
+                const googleGiven = response.data.user?.givenName ?? '';
+                const googleFamily = response.data.user?.familyName ?? '';
+                if (googleName) {
+                  await supabase.auth.updateUser({
+                    data: {
+                      full_name: googleName,
+                      first_name: googleGiven,
+                      last_name: googleFamily,
+                    },
+                  });
+                }
+              } else {
+                throw new Error('No ID token returned from Google.');
+              }
+            } catch (err: any) {
+              if (err.code !== '12501') { // user cancelled
+                Alert.alert('Google Sign In Error', err.message ?? 'Something went wrong.');
+              }
+            }
+          }}
+        >
+          <Ionicons name="logo-google" size={20} color={Colors.textPrimary} />
           <Text style={styles.socialBtnText}>Continue with Google</Text>
-          <Text style={styles.comingSoon}>Dev build</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.socialBtn} disabled>
-          <Ionicons name="logo-apple" size={20} color={Colors.textSecondary} />
+        {/* Apple Sign In */}
+        <TouchableOpacity
+          style={styles.socialBtn}
+          onPress={async () => {
+            try {
+              const credential = await AppleAuthentication.signInAsync({
+                requestedScopes: [
+                  AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+                  AppleAuthentication.AppleAuthenticationScope.EMAIL,
+                ],
+              });
+              if (credential.identityToken) {
+                // Apple only sends name on first sign-in — capture it now
+                const appleFirstName = credential.fullName?.givenName ?? '';
+                const appleLastName = credential.fullName?.familyName ?? '';
+                const appleName = [appleFirstName, appleLastName].filter(Boolean).join(' ');
+
+                const { error } = await supabase.auth.signInWithIdToken({
+                  provider: 'apple',
+                  token: credential.identityToken,
+                });
+                if (error) throw error;
+
+                // Store the name in user metadata since Apple won't send it again
+                if (appleName) {
+                  await supabase.auth.updateUser({
+                    data: {
+                      full_name: appleName,
+                      first_name: appleFirstName,
+                      last_name: appleLastName,
+                    },
+                  });
+                }
+              } else {
+                throw new Error('No identity token returned from Apple.');
+              }
+            } catch (err: any) {
+              if (err.code !== 'ERR_REQUEST_CANCELED') {
+                Alert.alert('Apple Sign In Error', err.message ?? 'Something went wrong.');
+              }
+            }
+          }}
+        >
+          <Ionicons name="logo-apple" size={20} color={Colors.textPrimary} />
           <Text style={styles.socialBtnText}>Continue with Apple</Text>
-          <Text style={styles.comingSoon}>Dev build</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -276,21 +471,17 @@ const styles = StyleSheet.create({
   },
   header: {
     alignItems: 'center',
-    marginBottom: 36,
-  },
-  logo: {
-    fontSize: 52,
-    marginBottom: 12,
+    marginBottom: 44,
+    marginTop: 12,
   },
   appName: {
-    fontSize: 30,
-    fontWeight: '800',
+    fontSize: 52,
+    fontWeight: '900',
     color: Colors.textPrimary,
-    marginBottom: 6,
+    letterSpacing: -1.5,
   },
-  tagline: {
-    fontSize: 14,
-    color: Colors.textSecondary,
+  dot: {
+    color: Colors.primary,
   },
   toggleRow: {
     flexDirection: 'row',
@@ -343,6 +534,56 @@ const styles = StyleSheet.create({
   eyeBtn: {
     padding: 4,
   },
+  atPrefix: {
+    color: Colors.primary,
+    fontSize: 16,
+    fontWeight: '600',
+    marginRight: 4,
+  },
+  usernameHint: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    marginBottom: 12,
+    marginTop: -6,
+    marginLeft: 4,
+  },
+  sectionLabel: {
+    color: Colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.6,
+    marginBottom: 10,
+    marginTop: 4,
+    marginLeft: 2,
+  },
+  prefCard: {
+    backgroundColor: Colors.surfaceLight,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 10,
+  },
+  prefCardActive: {
+    borderColor: Colors.primary,
+    backgroundColor: Colors.primaryBg,
+  },
+  prefHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  prefTitle: {
+    color: Colors.textPrimary,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  prefBody: {
+    color: Colors.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+  },
   primaryBtn: {
     backgroundColor: Colors.primary,
     borderRadius: 12,
@@ -381,20 +622,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     marginBottom: 12,
     gap: 12,
-    opacity: 0.5,
   },
   socialBtnText: {
     flex: 1,
     color: Colors.textPrimary,
     fontSize: 15,
     fontWeight: '500',
-  },
-  comingSoon: {
-    fontSize: 11,
-    color: Colors.textMuted,
-    backgroundColor: Colors.surfaceBorder,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
   },
 });

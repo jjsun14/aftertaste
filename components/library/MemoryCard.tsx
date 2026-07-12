@@ -15,10 +15,13 @@ const CARD_WIDTH = (SCREEN_WIDTH - CARD_PADDING * 2 - CARD_GAP) / 2;
 
 interface MemoryCardProps {
   memory: Memory;
+  visitCount?: number;       // total visits across all locations (original + returns)
+  overrideScore?: number;    // averaged score for grouped display
 }
 
-export default function MemoryCard({ memory }: MemoryCardProps) {
-  const scoreColor = getScoreColor(memory.compositeScore);
+export default function MemoryCard({ memory, visitCount, overrideScore }: MemoryCardProps) {
+  const displayScore = overrideScore ?? memory.compositeScore;
+  const scoreColor = getScoreColor(displayScore);
   const hasPhoto = memory.photos.length > 0 && memory.photos[0];
 
   // Build location string — fall back gracefully when city/state are empty
@@ -50,10 +53,19 @@ export default function MemoryCard({ memory }: MemoryCardProps) {
         <View style={styles.scoreBadge}>
           <Ionicons name="star" size={11} color={scoreColor} />
           <Text style={[styles.scoreText, { color: scoreColor }]}>
-            {memory.compositeScore.toFixed(1)}
+            {displayScore.toFixed(1)}
           </Text>
         </View>
       </View>
+      {/* Visit count badge — top-right, shown when > 1 visit */}
+      {(visitCount ?? 0) > 1 && (
+        <View style={styles.visitBadgeWrap}>
+          <View style={styles.visitBadge}>
+            <Ionicons name="refresh" size={10} color={Colors.white} />
+            <Text style={styles.visitBadgeText}>{visitCount}</Text>
+          </View>
+        </View>
+      )}
       {/* Bottom gradient + info */}
       <LinearGradient
         colors={['transparent', 'rgba(0,0,0,0.75)']}
@@ -121,6 +133,26 @@ const styles = StyleSheet.create({
   scoreText: {
     fontSize: 13,
     fontWeight: '800',
+  },
+  visitBadgeWrap: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    zIndex: 2,
+  },
+  visitBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    gap: 3,
+  },
+  visitBadgeText: {
+    color: Colors.white,
+    fontSize: 11,
+    fontWeight: '700',
   },
   gradient: {
     position: 'absolute',

@@ -2,13 +2,11 @@
 export type RatingLevel = 'Great' | 'Okay' | 'Poor';
 
 export type OccasionTag =
-  | 'Quick Bite'
+  | 'Regular Meal'
   | 'Date Night'
   | 'Drinks'
-  | 'Travel'
-  | 'Celebration'
-  | 'Regular Meal'
-  | 'Special Moment';
+  | 'Friends Meal'
+  | 'Family Meal';
 
 export type MoodTag =
   | 'Comforting'
@@ -18,12 +16,49 @@ export type MoodTag =
   | 'Calm'
   | 'Perfect';
 
-export type EateryType = 'Restaurant' | 'Bar' | 'Cafe' | 'Bakery' | 'Dessert';
+export type EateryType = 'Restaurant' | 'Fast Casual' | 'Cafe' | 'Bakery' | 'Bar' | 'Fine Dining' | 'Dessert';
 
 export interface SquadMember {
   id: string;
   name: string;
   avatar: string; // placeholder URL
+  profile_id?: string; // links to real app user (if they're on the app)
+}
+
+// ─── Friend types ─────────────────────────────────────────────────
+export interface FriendProfile {
+  id: string;          // friendship row id
+  profileId: string;   // user's profile UUID
+  displayName: string;
+  username: string | null;
+  firstName: string;
+  lastName: string;
+  friendCode: string;
+}
+
+export interface FriendActivity {
+  restaurantName: string;
+  city: string;
+  date: string;
+  eventType: 'new_memory' | 'return_visit';
+  userDisplayName: string;
+  userId: string;
+  createdAt: string;
+}
+
+export interface Visit {
+  id: string;
+  date: string;           // ISO date
+  whatIHad: string[];
+  photo?: string;         // single URL
+  note?: string;
+  tasteRating?: RatingLevel;
+  vibeRating?: RatingLevel;
+  valueRating?: RatingLevel;
+  tasteScore?: number;
+  vibeScore?: number;
+  valueScore?: number;
+  compositeScore?: number;
 }
 
 export interface Memory {
@@ -53,6 +88,9 @@ export interface Memory {
   squad: SquadMember[];
   memoryNote: string;
   isFavorite: boolean;
+  visits: Visit[];       // return visits (lightweight check-ins)
+  photoDates?: Record<string, string>;  // photo URL → ISO date for carousel date labels
+  tiedGroupId?: string | null;  // memories sharing this id always get the same compositeScore
 }
 
 export interface WantToTryEntry {
@@ -68,324 +106,155 @@ export interface WantToTryEntry {
   longitude: number;
 }
 
+// ─── Score preference ─────────────────────────────────────────────
+// User picks one at sign-up; locked after that. Determines how the three
+// rating dimensions blend into the raw composite (which then sets tier).
+export type ScorePreference = 'food_first' | 'full_picture';
+
+export const SCORE_WEIGHTS: Record<ScorePreference, { taste: number; vibe: number; value: number }> = {
+  food_first:   { taste: 0.5, vibe: 0.25, value: 0.25 },
+  full_picture: { taste: 0.4, vibe: 0.3,  value: 0.3  },
+};
+
+export const DEFAULT_SCORE_PREFERENCE: ScorePreference = 'food_first';
+
 // ─── Helpers ──────────────────────────────────────────────────────
-function computeComposite(taste: number, vibe: number, value: number): number {
-  return Math.round((taste * 0.5 + vibe * 0.25 + value * 0.25) * 10) / 10;
+export function computeComposite(
+  taste: number,
+  vibe: number,
+  value: number,
+  preference: ScorePreference = DEFAULT_SCORE_PREFERENCE,
+): number {
+  const w = SCORE_WEIGHTS[preference];
+  return Math.round((taste * w.taste + vibe * w.vibe + value * w.value) * 10) / 10;
 }
 
-// ─── Squad Members ────────────────────────────────────────────────
-const squad: Record<string, SquadMember> = {
-  keshav: { id: 's1', name: 'Keshav', avatar: 'https://i.pravatar.cc/100?img=11' },
-  lulu: { id: 's2', name: 'Lulu', avatar: 'https://i.pravatar.cc/100?img=5' },
-  marcus: { id: 's3', name: 'Marcus', avatar: 'https://i.pravatar.cc/100?img=12' },
-  aria: { id: 's4', name: 'Aria', avatar: 'https://i.pravatar.cc/100?img=9' },
-  jay: { id: 's5', name: 'Jay', avatar: 'https://i.pravatar.cc/100?img=3' },
+export function ratingToScore(rating: RatingLevel): number {
+  if (rating === 'Great') return 8.5;
+  if (rating === 'Okay') return 6.0;
+  return 3.5;
+}
+
+// ─── Tier-based ranking system ────────────────────────────────────
+// Five tiers chosen to keep peer pools cohesive at lifetime scale.
+// Note: raw composite formula maxes at 8.5 (G/G/G), so the Elite range
+// (8.5–10) is only reachable through redistribution against peers.
+export type Tier = 'Elite' | 'Great' | 'Solid' | 'Mid' | 'Bad';
+
+export const TIER_RANGES: Record<Tier, { min: number; max: number }> = {
+  Elite: { min: 8.5, max: 10.0 },
+  Great: { min: 7.0, max: 8.4 },
+  Solid: { min: 5.5, max: 6.9 },
+  Mid:   { min: 4.0, max: 5.4 },
+  Bad:   { min: 0.0, max: 3.9 },
 };
+
+export function determineTier(composite: number): Tier {
+  if (composite >= 8.5) return 'Elite';
+  if (composite >= 7.0) return 'Great';
+  if (composite >= 5.5) return 'Solid';
+  if (composite >= 4.0) return 'Mid';
+  return 'Bad';
+}
+
+/**
+ * Given a ranked list (ascending: worst → best within the tier),
+ * distribute scores evenly across the tier's range via linear interpolation.
+ *
+ * Members sharing a `tiedGroupId` are collapsed into a single rank slot and
+ * receive the same score, so "Too Close" ties stay tied across redistributions.
+ *
+ * Accepts either a plain string[] (legacy: all untied) or richer items with
+ * tiedGroupId — both shapes are supported so existing callers keep working.
+ */
+export function recalculateTierScores(
+  ranked: string[] | { id: string; tiedGroupId?: string | null }[],
+  tier: Tier,
+): { id: string; compositeScore: number }[] {
+  const items: { id: string; tiedGroupId?: string | null }[] =
+    ranked.length === 0
+      ? []
+      : typeof ranked[0] === 'string'
+        ? (ranked as string[]).map((id) => ({ id }))
+        : (ranked as { id: string; tiedGroupId?: string | null }[]);
+
+  const { min, max } = TIER_RANGES[tier];
+  if (items.length === 0) return [];
+
+  // Build slots — each unique tiedGroupId is one slot; untied items are their own slot.
+  const slots: string[][] = [];
+  const groupKeyToSlot = new Map<string, number>();
+  for (const item of items) {
+    const key = item.tiedGroupId ? `g:${item.tiedGroupId}` : `s:${item.id}`;
+    let idx = groupKeyToSlot.get(key);
+    if (idx === undefined) {
+      idx = slots.length;
+      slots.push([]);
+      groupKeyToSlot.set(key, idx);
+    }
+    slots[idx].push(item.id);
+  }
+
+  const slotCount = slots.length;
+  const round1 = (n: number) => Math.round(n * 10) / 10;
+  const slotScore = (i: number) =>
+    slotCount === 1
+      ? round1((min + max) / 2)
+      : round1(min + (i / (slotCount - 1)) * (max - min));
+
+  const out: { id: string; compositeScore: number }[] = [];
+  slots.forEach((memberIds, i) => {
+    const score = slotScore(i);
+    for (const id of memberIds) out.push({ id, compositeScore: score });
+  });
+  return out;
+}
+
+/** Generate a v4-shaped UUID for use as a tied_group_id. */
+export function newTiedGroupId(): string {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
 
 // ─── Occasion tag emoji map ────────────────────────────────────────
 export const occasionEmojis: Record<OccasionTag, string> = {
-  'Quick Bite': '🏃',
-  'Date Night': '💕',
-  'Drinks': '🍻',
-  'Travel': '🌍',
-  'Celebration': '🎉',
   'Regular Meal': '🍽️',
-  'Special Moment': '✨',
+  'Date Night': '💕',
+  'Drinks': '🍷',
+  'Friends Meal': '🍻',
+  'Family Meal': '👨‍👩‍👧',
 };
 
 export const eateryEmojis: Record<EateryType, string> = {
   Restaurant: '🍴',
-  Bar: '🍷',
+  'Fast Casual': '🥙',
   Cafe: '☕',
-  Bakery: '🧁',
+  Bakery: '🥐',
+  Bar: '🍷',
+  'Fine Dining': '🥂',
   Dessert: '🍰',
 };
 
-// ─── Mock Memories ────────────────────────────────────────────────
-export const memories: Memory[] = [
-  {
-    id: '1',
-    restaurantName: "Joe's Pizza",
-    priceTier: '$',
-    eateryType: 'Restaurant',
-    cuisineType: 'Pizza Restaurant',
-    address: '1435 Broadway, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7536,
-    longitude: -73.9862,
-    date: '2026-02-15',
-    photos: [
-      'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=600',
-      'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?w=600',
-    ],
-    whatIHad: ['Pizza', 'Garlic Knots'],
-    occasionTag: 'Quick Bite',
-    moodTag: 'Craving',
-    tasteRating: 'Great',
-    vibeRating: 'Okay',
-    valueRating: 'Great',
-    tasteScore: 8.5,
-    vibeScore: 7.0,
-    valueScore: 9.0,
-    compositeScore: computeComposite(8.5, 7.0, 9.0),
-    eatAgain: true,
-    squad: [squad.keshav, squad.jay],
-    memoryNote:
-      'Classic New York slice. The garlic knots were perfect — crispy outside, soft inside. Nothing fancy, just exactly what you want at 1am.',
-    isFavorite: false,
-  },
-  {
-    id: '2',
-    restaurantName: "Fookem's Fabulous",
-    priceTier: '$',
-    eateryType: 'Bakery',
-    cuisineType: 'Bakery',
-    address: '3606 Grand Ave, Miami, FL',
-    city: 'Miami',
-    state: 'FL',
-    latitude: 25.7617,
-    longitude: -80.1918,
-    date: '2026-01-01',
-    photos: [
-      'https://images.unsplash.com/photo-1519915028121-7d3463d20b13?w=600',
-    ],
-    whatIHad: ['Key Lime Pie', 'Key Lime Slushy'],
-    occasionTag: 'Quick Bite',
-    moodTag: 'Perfect',
-    tasteRating: 'Great',
-    vibeRating: 'Okay',
-    valueRating: 'Okay',
-    tasteScore: 9.8,
-    vibeScore: 6.0,
-    valueScore: 6.5,
-    compositeScore: computeComposite(9.8, 6.0, 6.5),
-    eatAgain: true,
-    squad: [squad.keshav, squad.lulu, squad.marcus, squad.aria, squad.jay],
-    memoryNote:
-      "Went to a key lime pie bakery with friends and it was honestly the best key lime pie I have ever had. Perfect balance of tart and sweet, and the crust was really good too. We just sat around, talked, and shared slices. Simple day but one of those moments that sticks with you.",
-    isFavorite: true,
-  },
-  {
-    id: '3',
-    restaurantName: 'Zuru Ramen',
-    priceTier: '$$',
-    eateryType: 'Restaurant',
-    cuisineType: 'Ramen Restaurant',
-    address: '2240 S University Dr, Davie, FL',
-    city: 'Davie',
-    state: 'FL',
-    latitude: 26.0629,
-    longitude: -80.2489,
-    date: '2026-02-10',
-    photos: [
-      'https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600',
-      'https://images.unsplash.com/photo-1557872943-16a5ac26437e?w=600',
-    ],
-    whatIHad: ['Tonkotsu Ramen', 'Gyoza'],
-    occasionTag: 'Regular Meal',
-    moodTag: 'Comforting',
-    tasteRating: 'Okay',
-    vibeRating: 'Great',
-    valueRating: 'Okay',
-    tasteScore: 6.5,
-    vibeScore: 8.0,
-    valueScore: 6.0,
-    compositeScore: computeComposite(6.5, 8.0, 6.0),
-    eatAgain: true,
-    squad: [squad.lulu],
-    memoryNote:
-      'Solid ramen spot. The broth was rich but could use a bit more depth. Vibes were great though — cozy and warm.',
-    isFavorite: false,
-  },
-  {
-    id: '4',
-    restaurantName: "Culver's",
-    priceTier: '$',
-    eateryType: 'Restaurant',
-    cuisineType: 'Fast Food Restaurant',
-    address: '1900 S University Dr, Davie, FL',
-    city: 'Davie',
-    state: 'FL',
-    latitude: 26.0665,
-    longitude: -80.2490,
-    date: '2026-02-08',
-    photos: [
-      'https://images.unsplash.com/photo-1550547660-d9450f859349?w=600',
-      'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600',
-    ],
-    whatIHad: ['ButterBurger', 'Cheese Curds', 'Concrete Mixer'],
-    occasionTag: 'Quick Bite',
-    moodTag: 'Craving',
-    tasteRating: 'Great',
-    vibeRating: 'Great',
-    valueRating: 'Great',
-    tasteScore: 9.0,
-    vibeScore: 8.5,
-    valueScore: 9.0,
-    compositeScore: computeComposite(9.0, 8.5, 9.0),
-    eatAgain: true,
-    squad: [squad.marcus, squad.jay],
-    memoryNote:
-      'Culver\'s never misses. The ButterBurger is comfort food perfection and those cheese curds are addictive.',
-    isFavorite: true,
-  },
-  {
-    id: '5',
-    restaurantName: 'Ootoya Times Square',
-    priceTier: '$$',
-    eateryType: 'Restaurant',
-    cuisineType: 'Japanese Restaurant',
-    address: '141 W 41st St, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7553,
-    longitude: -73.9870,
-    date: '2026-01-20',
-    photos: [
-      'https://images.unsplash.com/photo-1580822184713-fc5400e7fe10?w=600',
-    ],
-    whatIHad: ['Chicken Katsu', 'Miso Soup', 'Rice'],
-    occasionTag: 'Regular Meal',
-    moodTag: 'Calm',
-    tasteRating: 'Okay',
-    vibeRating: 'Okay',
-    valueRating: 'Okay',
-    tasteScore: 6.0,
-    vibeScore: 6.5,
-    valueScore: 5.5,
-    compositeScore: computeComposite(6.0, 6.5, 5.5),
-    eatAgain: false,
-    squad: [],
-    memoryNote:
-      'Decent Japanese spot near Times Square. Nothing special but solid if you need a quick sit-down meal in the area.',
-    isFavorite: false,
-  },
-  {
-    id: '6',
-    restaurantName: 'Birdland Jazz Club',
-    priceTier: '$$$',
-    eateryType: 'Bar',
-    cuisineType: 'Jazz Bar',
-    address: '315 W 44th St, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7590,
-    longitude: -73.9910,
-    date: '2026-01-15',
-    photos: [
-      'https://images.unsplash.com/photo-1514933651103-005eec06c04b?w=600',
-    ],
-    whatIHad: ['Old Fashioned', 'Sliders'],
-    occasionTag: 'Date Night',
-    moodTag: 'Nostalgic',
-    tasteRating: 'Okay',
-    vibeRating: 'Great',
-    valueRating: 'Poor',
-    tasteScore: 6.0,
-    vibeScore: 9.5,
-    valueScore: 4.0,
-    compositeScore: computeComposite(6.0, 9.5, 4.0),
-    eatAgain: true,
-    squad: [squad.aria],
-    memoryNote:
-      'The food is whatever but you go for the jazz. Incredible live music, dim lighting, classic NYC vibes. Worth every penny for the experience.',
-    isFavorite: true,
-  },
-  {
-    id: '7',
-    restaurantName: 'Valla Table',
-    priceTier: '$$',
-    eateryType: 'Cafe',
-    cuisineType: 'Mediterranean Cafe',
-    address: '641 10th Ave, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7600,
-    longitude: -73.9960,
-    date: '2026-02-01',
-    photos: [
-      'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=600',
-    ],
-    whatIHad: ['Shakshuka', 'Turkish Coffee', 'Baklava'],
-    occasionTag: 'Special Moment',
-    moodTag: 'Adventurous',
-    tasteRating: 'Great',
-    vibeRating: 'Great',
-    valueRating: 'Okay',
-    tasteScore: 8.0,
-    vibeScore: 8.5,
-    valueScore: 6.5,
-    compositeScore: computeComposite(8.0, 8.5, 6.5),
-    eatAgain: true,
-    squad: [squad.keshav, squad.lulu],
-    memoryNote:
-      'Hidden gem in Hell\'s Kitchen. The shakshuka was phenomenal and the Turkish coffee hit different. Will be back.',
-    isFavorite: false,
-  },
-];
 
-// ─── Want to Try Entries ─────────────────────────────────────────
-export const wantToTry: WantToTryEntry[] = [
-  {
-    id: 'w1',
-    restaurantName: 'MEXiCUE',
-    priceTier: '$$',
-    eateryType: 'Restaurant',
-    cuisineType: 'Mexican BBQ Fusion',
-    address: '1440 Broadway, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7533,
-    longitude: -73.9869,
-  },
-  {
-    id: 'w2',
-    restaurantName: "McDonald's",
-    priceTier: '$',
-    eateryType: 'Restaurant',
-    cuisineType: 'Fast Food',
-    address: '604 10th Ave, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7598,
-    longitude: -73.9952,
-  },
-  {
-    id: 'w3',
-    restaurantName: 'Carnegie Diner & Cafe',
-    priceTier: '$$',
-    eateryType: 'Cafe',
-    cuisineType: 'American Diner',
-    address: '205 W 57th St, New York, NY',
-    city: 'New York City',
-    state: 'NY',
-    latitude: 40.7652,
-    longitude: -73.9810,
-  },
-];
 
 // ─── Search results (for Add Experience step 1) ──────────────────
 export interface SearchResult {
   id: string;
   name: string;
   address: string;
+  city?: string;          // from Foursquare locality field (structured, reliable)
+  state?: string;         // from Foursquare region field
   distance: string;
+  category: string;       // cuisine/category from Foursquare (e.g. "Italian", "Sushi", "Pizza")
+  priceTier?: '$' | '$$' | '$$$' | '$$$$'; // from Foursquare price data (not always available)
   isVisited: boolean;
   isBookmarked: boolean;
   latitude?: number;
   longitude?: number;
 }
 
-export const searchResults: SearchResult[] = [
-  { id: 'sr1', name: "Joe's Pizza", address: '1435 Broadway, New York, NY', distance: '0.1 mi', isVisited: true, isBookmarked: false },
-  { id: 'sr2', name: 'Ootoya Times Square', address: '141 W 41st St, New York, NY', distance: '0.4 mi', isVisited: true, isBookmarked: false },
-  { id: 'sr3', name: 'MEXiCUE', address: '1440 Broadway, New York, NY', distance: '0.5 mi', isVisited: false, isBookmarked: true },
-  { id: 'sr4', name: 'Birdland Jazz Club', address: '315 W 44th St, New York, NY', distance: '2.6 mi', isVisited: false, isBookmarked: false },
-  { id: 'sr5', name: 'Valla Table', address: '641 10th Ave, New York, NY', distance: '7 mi', isVisited: true, isBookmarked: false },
-  { id: 'sr6', name: "McDonald's", address: '604 10th Ave, New York, NY', distance: '8 mi', isVisited: false, isBookmarked: false },
-  { id: 'sr7', name: 'Carnegie Diner & Cafe', address: '205 W 57th St, New York, NY', distance: '22 mi', isVisited: false, isBookmarked: true },
-];
 
 // ─── Helper to get relative time ─────────────────────────────────
 export function getRelativeTime(dateStr: string): string {

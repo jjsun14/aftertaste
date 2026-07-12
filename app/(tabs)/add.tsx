@@ -17,25 +17,16 @@ import { Colors } from '@/theme/colors';
 import StepSearch from '@/components/add/StepSearch';
 import StepLog, { type LogFormData } from '@/components/add/StepLog';
 import StepCompare from '@/components/add/StepCompare';
+import ReturnVisitForm from '@/components/add/ReturnVisitForm';
 import { useMemories } from '@/context/DataContext';
 import { useAuth } from '@/context/AuthContext';
 import { uploadPhoto } from '@/lib/uploadPhoto';
-import type { SearchResult, OccasionTag, MoodTag, EateryType, RatingLevel } from '@/data/mockData';
+import type { SearchResult, RatingLevel, Memory, Visit } from '@/data/mockData';
+import { determineTier, newTiedGroupId, recalculateTierScores, computeComposite, ratingToScore } from '@/data/mockData';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SWIPE_BACK_THRESHOLD = SCREEN_WIDTH * 0.25;
 const TIMING_CONFIG = { duration: 300, easing: Easing.out(Easing.cubic) };
-
-// Convert RatingLevel to numeric score
-function ratingToScore(rating: RatingLevel): number {
-  if (rating === 'Great') return 8.5;
-  if (rating === 'Okay') return 6.0;
-  return 3.5;
-}
-
-function computeComposite(taste: number, vibe: number, value: number): number {
-  return Math.round((taste * 0.5 + vibe * 0.25 + value * 0.25) * 10) / 10;
-}
 
 export default function AddExperienceScreen() {
   const [step, setStep] = useState(1);
@@ -43,9 +34,11 @@ export default function AddExperienceScreen() {
   const [compareProgress, setCompareProgress] = useState(0);
   const [logData, setLogData] = useState<LogFormData | null>(null);
   const [saving, setSaving] = useState(false);
+  const [returnVisitMode, setReturnVisitMode] = useState(false);
+  const [returnVisitMemory, setReturnVisitMemory] = useState<Memory | null>(null);
   const insets = useSafeAreaInsets();
-  const { addMemory } = useMemories();
-  const { user } = useAuth();
+  const { memories, addMemory, addVisit, batchUpdateCompositeScores } = useMemories();
+  const { user, scorePreference } = useAuth();
 
   const position = useSharedValue(0);
   const dragX = useSharedValue(0);
@@ -59,6 +52,8 @@ export default function AddExperienceScreen() {
         setSelectedRestaurant(null);
         setCompareProgress(0);
         setLogData(null);
+        setReturnVisitMode(false);
+        setReturnVisitMemory(null);
         position.value = 0;
         dragX.value = 0;
       };
@@ -67,7 +62,7 @@ export default function AddExperienceScreen() {
 
   const getProgress = () => {
     if (step === 1) return 0.33;
-    if (step === 2) return 0.66;
+    if (step === 2) return returnVisitMode ? 1.0 : 0.66;
     return 0.66 + compareProgress * 0.34;
   };
 
@@ -77,9 +72,81 @@ export default function AddExperienceScreen() {
     position.value = withTiming(1, TIMING_CONFIG);
   };
 
+  const handleQuickCheckin = async (existingMemory: Memory) => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const visit: Visit = {
+        id: `visit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        date: today,
+        whatIHad: [],
+      };
+      await addVisit(existingMemory.id, visit);
+      router.navigate({ pathname: '/(tabs)/library', params: { showTab: 'all' } });
+    } catch (err: any) {
+      Alert.alert('Error', err.message ?? 'Could not save visit.');
+    }
+  };
+
+  const handleReturnVisit = (result: SearchResult, existingMemory: Memory) => {
+    setSelectedRestaurant(result);
+    setReturnVisitMode(true);
+    setReturnVisitMemory(existingMemory);
+    setStep(2);
+    position.value = withTiming(1, TIMING_CONFIG);
+  };
+
+  const handleSaveReturnVisit = async (visitData: Omit<Visit, 'id'>) => {
+    if (!returnVisitMemory) return;
+    setSaving(true);
+    try {
+      // Upload photo if present
+      let photoUrl: string | undefined;
+      if (visitData.photo && user) {
+        try {
+          photoUrl = await uploadPhoto(visitData.photo, user.id);
+        } catch {
+          photoUrl = undefined; // skip photo on failure
+        }
+      }
+
+      const visit: Visit = {
+        ...visitData,
+        id: `visit-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        photo: photoUrl ?? undefined,
+      };
+
+      await addVisit(returnVisitMemory.id, visit);
+
+      const wasRated = visit.tasteScore != null && visit.vibeScore != null && visit.valueScore != null;
+      const memoryId = returnVisitMemory.id;
+
+      // Reset and navigate
+      setStep(1);
+      setSelectedRestaurant(null);
+      setReturnVisitMode(false);
+      setReturnVisitMemory(null);
+      setCompareProgress(0);
+      setLogData(null);
+      position.value = withTiming(0, TIMING_CONFIG);
+
+      // Rated return visits invalidate the comparative ranking — go re-rank.
+      if (wasRated) {
+        router.push({ pathname: '/rerank/[id]', params: { id: memoryId } } as any);
+      } else {
+        router.navigate({ pathname: '/(tabs)/library', params: { showTab: 'all' } });
+      }
+    } catch (err: any) {
+      Alert.alert('Could not save', err.message ?? 'Something went wrong.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleBack = () => {
     if (step === 2) {
       setStep(1);
+      setReturnVisitMode(false);
+      setReturnVisitMemory(null);
       position.value = withTiming(0, TIMING_CONFIG, () => {
         runOnJS(setSelectedRestaurant)(null);
       });
@@ -95,7 +162,7 @@ export default function AddExperienceScreen() {
     position.value = withTiming(2, TIMING_CONFIG);
   };
 
-  const handleFinish = async () => {
+  const handleFinish = async (rankingResult?: { insertionIndex: number; rankedGroup: Memory[]; tiedWithMemoryId?: string }) => {
     if (!selectedRestaurant || !logData) return;
 
     setSaving(true);
@@ -110,7 +177,6 @@ export default function AddExperienceScreen() {
           );
         } catch (photoErr: any) {
           console.error('Photo upload error:', photoErr);
-          // Don't block saving — just skip photos if upload fails
           Alert.alert(
             'Photo upload failed',
             `Your memory will be saved without photos. Error: ${photoErr.message}`,
@@ -123,51 +189,108 @@ export default function AddExperienceScreen() {
       const tasteScore = ratingToScore(logData.taste);
       const vibeScore = ratingToScore(logData.vibe);
       const valueScore = ratingToScore(logData.value);
+      const preliminaryComposite = computeComposite(tasteScore, vibeScore, valueScore, scorePreference);
+      const tier = determineTier(preliminaryComposite);
 
-      // Parse squad names into SquadMember-like objects
-      const squad = logData.squadNames
+      // Build ranked list and insert new memory at binary search position
+      const rankedGroup = rankingResult?.rankedGroup ?? [];
+      const insertionIndex = rankingResult?.insertionIndex ?? 0;
+      const tiedWithMemoryId = rankingResult?.tiedWithMemoryId;
+
+      // Resolve tied_group_id for the new memory (and possibly its partner).
+      let newMemoryTiedGroupId: string | null = null;
+      let partnerTiedGroupUpdate: { id: string; tiedGroupId: string } | null = null;
+      if (tiedWithMemoryId) {
+        const partner = rankedGroup.find((m) => m.id === tiedWithMemoryId);
+        if (partner?.tiedGroupId) {
+          newMemoryTiedGroupId = partner.tiedGroupId;
+        } else if (partner) {
+          const fresh = newTiedGroupId();
+          newMemoryTiedGroupId = fresh;
+          partnerTiedGroupUpdate = { id: partner.id, tiedGroupId: fresh };
+        }
+      }
+
+      const rankedItems: { id: string; tiedGroupId?: string | null }[] = rankedGroup.map((m) => ({
+        id: m.id,
+        tiedGroupId:
+          partnerTiedGroupUpdate && m.id === partnerTiedGroupUpdate.id
+            ? partnerTiedGroupUpdate.tiedGroupId
+            : m.tiedGroupId ?? null,
+      }));
+      rankedItems.splice(insertionIndex, 0, { id: 'NEW', tiedGroupId: newMemoryTiedGroupId });
+
+      // Redistribute scores across the tier+eateryType group
+      const newScores = recalculateTierScores(rankedItems, tier);
+      const newMemoryScore = newScores.find((s) => s.id === 'NEW')?.compositeScore ?? preliminaryComposite;
+      const otherUpdates = newScores
+        .filter((s) => s.id !== 'NEW')
+        .map((s) =>
+          partnerTiedGroupUpdate && s.id === partnerTiedGroupUpdate.id
+            ? { ...s, tiedGroupId: partnerTiedGroupUpdate.tiedGroupId }
+            : s,
+        );
+
+      // Build squad from app friends + free-text names
+      const friendSquad = (logData.squadFriends ?? []).map((f) => ({
+        id: `sq-friend-${f.profileId}`,
+        name: f.displayName,
+        avatar: '',
+        profile_id: f.profileId,
+      }));
+      const freeTextSquad = logData.squadNames
         .split(',')
         .map((n) => n.trim())
         .filter(Boolean)
         .map((name, i) => ({ id: `sq-${i}`, name, avatar: '' }));
+      const squad = [...friendSquad, ...freeTextSquad];
 
-      // Parse city and state from address string "123 Main St, City, ST"
-      // Split by comma, last part = state abbrev, second-to-last = city
-      const addressParts = selectedRestaurant.address.split(',').map((p) => p.trim());
-      const parsedState = addressParts.length >= 2
-        ? addressParts[addressParts.length - 1].replace(/\d+/g, '').trim()  // strip ZIP if present
-        : '';
-      const parsedCity = addressParts.length >= 3
-        ? addressParts[addressParts.length - 2].trim()
-        : '';
+      // Use structured city/state from Foursquare locality/region fields.
+      // Fallback: parse from address string if structured fields are missing.
+      const parsedCity = selectedRestaurant.city ?? (() => {
+        const parts = selectedRestaurant.address.split(',').map((p) => p.trim());
+        return parts.length >= 3 ? parts[parts.length - 2] : '';
+      })();
+      const parsedState = selectedRestaurant.state ?? (() => {
+        const parts = selectedRestaurant.address.split(',').map((p) => p.trim());
+        return parts.length >= 2 ? parts[parts.length - 1].replace(/\d+/g, '').trim() : '';
+      })();
 
+      // Save new memory with its tier-calculated score
       await addMemory({
         restaurantName: selectedRestaurant.name,
-        priceTier: '$',         // placeholder — search result doesn't carry price yet
+        priceTier: logData.priceTier,
         eateryType: logData.eateryType,
-        cuisineType: logData.eateryType, // best we have from StepSearch for now
+        cuisineType: selectedRestaurant.category || '',
         address: selectedRestaurant.address,
         city: parsedCity,
         state: parsedState,
         latitude: selectedRestaurant.latitude ?? 0,
         longitude: selectedRestaurant.longitude ?? 0,
-        date: new Date().toISOString().split('T')[0],
+        date: logData.date,
         photos: uploadedPhotoUrls,
         whatIHad: logData.foodItems.split(',').map((s) => s.trim()).filter(Boolean),
         occasionTag: logData.occasion,
-        moodTag: 'Perfect',     // default for now, can add mood picker later
+        moodTag: 'Perfect',
         tasteRating: logData.taste,
         vibeRating: logData.vibe,
         valueRating: logData.value,
         tasteScore,
         vibeScore,
         valueScore,
-        compositeScore: computeComposite(tasteScore, vibeScore, valueScore),
+        compositeScore: newMemoryScore,
         eatAgain: logData.eatAgain,
         squad,
         memoryNote: logData.note,
         isFavorite: false,
+        visits: [],
+        tiedGroupId: newMemoryTiedGroupId,
       });
+
+      // Update other memories in the group with redistributed scores
+      if (otherUpdates.length > 0) {
+        await batchUpdateCompositeScores(otherUpdates);
+      }
 
       // Reset flow then navigate to library
       setStep(1);
@@ -175,7 +298,7 @@ export default function AddExperienceScreen() {
       setCompareProgress(0);
       setLogData(null);
       position.value = withTiming(0, TIMING_CONFIG);
-      router.navigate('/(tabs)/library');
+      router.navigate({ pathname: '/(tabs)/library', params: { showTab: 'all' } });
     } catch (err: any) {
       Alert.alert('Could not save', err.message ?? 'Something went wrong.');
     } finally {
@@ -258,28 +381,38 @@ export default function AddExperienceScreen() {
       <GestureDetector gesture={swipeGesture}>
         <View style={styles.stepsContainer}>
           <Animated.View style={[styles.stepPanel, step1Style]}>
-            <StepSearch onSelect={handleSelect} />
+            <StepSearch onSelect={handleSelect} onReturnVisit={handleReturnVisit} onQuickCheckin={handleQuickCheckin} />
           </Animated.View>
 
           <Animated.View style={[styles.stepPanel, step2Style]} pointerEvents={step === 2 ? 'auto' : 'none'}>
-            {selectedRestaurant && (
+            {selectedRestaurant && returnVisitMode && returnVisitMemory ? (
+              <ReturnVisitForm
+                restaurant={selectedRestaurant}
+                existingMemory={returnVisitMemory}
+                onSave={handleSaveReturnVisit}
+                onCancel={handleBack}
+                saving={saving}
+              />
+            ) : selectedRestaurant ? (
               <StepLog
                 restaurant={selectedRestaurant}
                 onNext={handleNext}
-                onBack={() => {
-                  setStep(1);
-                  setSelectedRestaurant(null);
-                  position.value = withTiming(0, TIMING_CONFIG);
-                }}
                 onDataChange={setLogData}
               />
-            )}
+            ) : null}
           </Animated.View>
 
           <Animated.View style={[styles.stepPanel, step3Style]} pointerEvents={step === 3 ? 'auto' : 'none'}>
             {selectedRestaurant && (
               <StepCompare
                 restaurant={selectedRestaurant}
+                eateryType={logData?.eateryType}
+                preliminaryScore={logData ? computeComposite(
+                  ratingToScore(logData.taste),
+                  ratingToScore(logData.vibe),
+                  ratingToScore(logData.value),
+                  scorePreference,
+                ) : undefined}
                 onBack={() => {
                   setStep(2);
                   setCompareProgress(0);

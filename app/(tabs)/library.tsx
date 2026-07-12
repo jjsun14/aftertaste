@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,18 +12,19 @@ import {
   Animated,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '@/theme/colors';
-import { useMemories } from '@/context/DataContext';
-import { useWantToTry } from '@/context/DataContext';
+import { useMemories, useWantToTry } from '@/context/DataContext';
 import MemoryGrid from '@/components/library/MemoryGrid';
+import type { GroupedMemory } from '@/components/library/MemoryGrid';
 import WantToTryList from '@/components/library/WantToTryList';
 import type { EateryType } from '@/data/mockData';
 
 type LibraryTab = 'all' | 'wantToTry';
 type SortOption = 'newest' | 'score_high' | 'score_low' | 'oldest';
 
-const EATERY_TYPES: EateryType[] = ['Restaurant', 'Bar', 'Cafe', 'Bakery', 'Dessert'];
+const EATERY_TYPES: EateryType[] = ['Restaurant', 'Fast Casual', 'Cafe', 'Bakery', 'Bar', 'Fine Dining', 'Dessert'];
 const SORT_LABELS: Record<SortOption, string> = {
   newest: 'Newest first',
   oldest: 'Oldest first',
@@ -33,7 +34,13 @@ const SORT_LABELS: Record<SortOption, string> = {
 
 export default function LibraryScreen() {
   const insets = useSafeAreaInsets();
+  const { showTab } = useLocalSearchParams<{ showTab?: string }>();
   const [activeTab, setActiveTab] = useState<LibraryTab>('all');
+
+  // When navigated to with showTab=all (e.g. after adding a memory), reset to All Entries
+  useEffect(() => {
+    if (showTab === 'all') setActiveTab('all');
+  }, [showTab]);
 
   // Drag-to-dismiss for filter sheet
   const filterSheetY = useRef(new Animated.Value(0)).current;
@@ -70,10 +77,11 @@ export default function LibraryScreen() {
     return Array.from(set).sort();
   }, [memories]);
 
-  // Apply all filters + sort
-  const filteredMemories = useMemo(() => {
+  // Group memories by restaurant name (case-insensitive), apply filters + sort
+  const filteredGroups = useMemo(() => {
     let list = [...memories];
 
+    // Apply search filter
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(
@@ -83,22 +91,71 @@ export default function LibraryScreen() {
       );
     }
 
+    // Apply eatery type filter
     if (selectedEatery) {
       list = list.filter((m) => m.eateryType === selectedEatery);
     }
 
+    // Apply city filter
     if (selectedCity) {
       list = list.filter((m) => m.city === selectedCity);
     }
 
-    switch (sortBy) {
-      case 'newest':  list.sort((a, b) => b.date.localeCompare(a.date)); break;
-      case 'oldest':  list.sort((a, b) => a.date.localeCompare(b.date)); break;
-      case 'score_high': list.sort((a, b) => b.compositeScore - a.compositeScore); break;
-      case 'score_low':  list.sort((a, b) => a.compositeScore - b.compositeScore); break;
+    // Group by restaurant name (case-insensitive)
+    const groupMap = new Map<string, typeof list>();
+    for (const m of list) {
+      const key = m.restaurantName.toLowerCase().trim();
+      const group = groupMap.get(key);
+      if (group) {
+        group.push(m);
+      } else {
+        groupMap.set(key, [m]);
+      }
     }
 
-    return list;
+    // Build grouped entries
+    const groups: GroupedMemory[] = [];
+    for (const mems of groupMap.values()) {
+      // Sort group members newest-first so representative = most recent
+      mems.sort((a, b) => b.date.localeCompare(a.date));
+      const representative = mems[0];
+
+      // Total visits = number of location entries + sum of all return visits
+      const totalVisits = mems.reduce(
+        (sum, m) => sum + 1 + (m.visits?.length ?? 0),
+        0
+      );
+
+      groups.push({
+        memory: representative,
+        visitCount: totalVisits,
+        overrideScore: representative.compositeScore,
+      });
+    }
+
+    // Helper: most recent activity date (original date or latest return visit)
+    const latestDate = (g: GroupedMemory) => {
+      const visitDates = (g.memory.visits ?? []).map((v) => v.date);
+      return [g.memory.date, ...visitDates].sort().pop() ?? g.memory.date;
+    };
+
+    // Sort groups
+    switch (sortBy) {
+      case 'newest':
+        groups.sort((a, b) => { const da = latestDate(a), db = latestDate(b); return da > db ? -1 : da < db ? 1 : 0; });
+        break;
+      case 'oldest':
+        groups.sort((a, b) => { const da = latestDate(a), db = latestDate(b); return da < db ? -1 : da > db ? 1 : 0; });
+        break;
+      case 'score_high':
+        groups.sort((a, b) => b.overrideScore - a.overrideScore);
+        break;
+      case 'score_low':
+        groups.sort((a, b) => a.overrideScore - b.overrideScore);
+        break;
+    }
+
+    return groups;
   }, [memories, search, selectedEatery, selectedCity, sortBy]);
 
   const activeFilterCount =
@@ -208,7 +265,7 @@ export default function LibraryScreen() {
       {activeTab === 'all' ? (
         memoriesLoading ? (
           <View style={styles.centeredWrap}><ActivityIndicator color={Colors.primary} /></View>
-        ) : filteredMemories.length === 0 ? (
+        ) : filteredGroups.length === 0 ? (
           <View style={styles.centeredWrap}>
             <Ionicons name="restaurant-outline" size={40} color={Colors.textMuted} />
             <Text style={styles.emptyText}>No memories found</Text>
@@ -220,7 +277,7 @@ export default function LibraryScreen() {
           </View>
         ) : (
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
-            <MemoryGrid memories={filteredMemories} />
+            <MemoryGrid groups={filteredGroups} />
           </ScrollView>
         )
       ) : wttLoading ? (
@@ -305,7 +362,7 @@ export default function LibraryScreen() {
             onPress={() => setShowFilterSheet(false)}
           >
             <Text style={styles.applyBtnText}>
-              Show {filteredMemories.length} result{filteredMemories.length !== 1 ? 's' : ''}
+              Show {filteredGroups.length} result{filteredGroups.length !== 1 ? 's' : ''}
             </Text>
           </TouchableOpacity>
 

@@ -42,9 +42,9 @@ export const Colors = {
   tagMood: '#3B82F6',
   tagMoodBg: 'rgba(59, 130, 246, 0.2)',
 
-  // Tab bar
-  tabBar: '#0D1424',
-  tabBarBorder: '#1A2235',
+  // Tab bar — neutral dark to blend with map's dark-v11 style
+  tabBar: '#0A0E17',
+  tabBarBorder: '#151B28',
   tabActive: '#FFFFFF',
   tabInactive: '#5A6577',
 
@@ -55,15 +55,41 @@ export const Colors = {
   cardShadow: 'rgba(0, 0, 0, 0.3)',
 };
 
-// Get score badge color based on score value
+// Score color thresholds match the tier system (Great >= 7.0, Okay >= 4.0).
+// Keeping them in sync ensures the badge colour reflects the actual ranking tier.
 export function getScoreColor(score: number): string {
-  if (score >= 7.5) return Colors.ratingGreat;
-  if (score >= 5.0) return Colors.ratingOkay;
+  if (score >= 7.0) return Colors.ratingGreat;
+  if (score >= 4.0) return Colors.ratingOkay;
   return Colors.ratingPoor;
 }
 
 export function getScoreBgColor(score: number): string {
-  if (score >= 7.5) return Colors.scoreBgGreat;
-  if (score >= 5.0) return Colors.scoreBgOkay;
+  if (score >= 7.0) return Colors.scoreBgGreat;
+  if (score >= 4.0) return Colors.scoreBgOkay;
   return Colors.scoreBgPoor;
+}
+
+// Curated avatar palette — looks good on dark backgrounds with white text
+const AVATAR_COLORS = [
+  '#6366F1', // indigo
+  '#8B5CF6', // violet
+  '#A855F7', // purple
+  '#EC4899', // pink
+  '#F43F5E', // rose
+  '#EF4444', // red
+  '#F97316', // orange
+  '#EAB308', // yellow
+  '#22C55E', // green
+  '#14B8A6', // teal
+  '#0EA5E9', // sky
+  '#3B82F6', // blue
+];
+
+/** Deterministic avatar color from any string (user ID, name, etc.) */
+export function getAvatarColor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) {
+    hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }

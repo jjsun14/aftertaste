@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { Colors } from '@/theme/colors';
 import { eateryEmojis } from '@/data/mockData';
 import type { WantToTryEntry } from '@/data/mockData';
@@ -13,10 +14,31 @@ interface WantToTryListProps {
 export default function WantToTryList({ entries }: WantToTryListProps) {
   const { toggleBookmark } = useWantToTry();
 
+  const handlePress = (entry: WantToTryEntry) => {
+    if (entry.latitude && entry.longitude) {
+      router.navigate({ pathname: '/(tabs)', params: { focusWtt: entry.id } } as any);
+    }
+  };
+
+  if (entries.length === 0) {
+    return (
+      <View style={styles.emptyContainer}>
+        <Ionicons name="bookmark-outline" size={40} color={Colors.textMuted} />
+        <Text style={styles.emptyTitle}>No places saved yet</Text>
+        <Text style={styles.emptySubtitle}>Bookmark restaurants from the search tab to build your list</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       {entries.map((entry) => (
-        <View key={entry.id} style={styles.row}>
+        <TouchableOpacity
+          key={entry.id}
+          style={styles.row}
+          activeOpacity={0.7}
+          onPress={() => handlePress(entry)}
+        >
           <View style={styles.iconWrap}>
             <Ionicons name="location-outline" size={20} color={Colors.textSecondary} />
           </View>
@@ -41,13 +63,32 @@ export default function WantToTryList({ entries }: WantToTryListProps) {
               <Ionicons name="bookmark" size={20} color={Colors.primary} />
             </TouchableOpacity>
           </View>
-        </View>
+        </TouchableOpacity>
       ))}
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 64,
+    paddingHorizontal: 32,
+    gap: 8,
+  },
+  emptyTitle: {
+    color: Colors.textSecondary,
+    fontSize: 16,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  emptySubtitle: {
+    color: Colors.textMuted,
+    fontSize: 14,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
   container: {
     paddingHorizontal: 16,
   },

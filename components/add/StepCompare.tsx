@@ -1,13 +1,13 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   Dimensions,
   TouchableOpacity,
-  Platform,
   ActivityIndicator,
 } from 'react-native';
+import { TouchableOpacity as GHTouchableOpacity } from 'react-native-gesture-handler';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -21,51 +21,100 @@ import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-g
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Colors, getScoreColor } from '@/theme/colors';
-import { memories, type SearchResult, type Memory } from '@/data/mockData';
+import type { SearchResult, Memory, EateryType } from '@/data/mockData';
+import { determineTier } from '@/data/mockData';
+import { useMemories } from '@/context/DataContext';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const SWIPE_THRESHOLD = SCREEN_WIDTH * 0.2;
 const CARD_WIDTH = SCREEN_WIDTH - 48;
 const CARD_HEIGHT = SCREEN_HEIGHT * 0.38;
+const MAX_COMPARISONS = 5;
 
 interface StepCompareProps {
   restaurant: SearchResult;
+  eateryType?: EateryType;
+  preliminaryScore?: number;
+  excludeMemoryId?: string;
   onBack: () => void;
-  onFinish: () => void;
+  onFinish: (result: {
+    insertionIndex: number;
+    rankedGroup: Memory[];
+    tiedWithMemoryId?: string;
+  }) => void;
   onProgress: (progress: number) => void;
   saving?: boolean;
 }
 
-export default function StepCompare({ restaurant, onBack, onFinish, onProgress, saving }: StepCompareProps) {
-  const comparisons = memories.filter(
-    (m) => m.restaurantName !== restaurant.name
-  );
-  const totalComparisons = comparisons.length;
+export default function StepCompare({
+  restaurant,
+  eateryType,
+  preliminaryScore,
+  excludeMemoryId,
+  onBack,
+  onFinish,
+  onProgress,
+  saving,
+}: StepCompareProps) {
+  const { memories } = useMemories();
 
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [results, setResults] = useState<{ memory: Memory; verdict: 'better' | 'worse' | 'skip' }[]>([]);
+  // Build the ranked group: same tier + same eatery type, sorted ascending by score
+  const rankedGroup = useMemo(() => {
+    const tier = determineTier(preliminaryScore ?? 5.0);
+    const type = eateryType ?? 'Restaurant';
+    const newNameKey = restaurant.name.toLowerCase().trim();
 
+    return memories
+      .filter((m) => {
+        if (excludeMemoryId && m.id === excludeMemoryId) return false;
+        if (!excludeMemoryId && m.restaurantName.toLowerCase().trim() === newNameKey) return false;
+        if (m.eateryType !== type) return false;
+        if (determineTier(m.compositeScore) !== tier) return false;
+        return true;
+      })
+      .sort((a, b) => a.compositeScore - b.compositeScore);
+  }, [memories, restaurant.name, eateryType, preliminaryScore, excludeMemoryId]);
+
+  const totalPossible = Math.min(MAX_COMPARISONS, rankedGroup.length > 0 ? Math.ceil(Math.log2(rankedGroup.length + 1)) : 0);
+
+  // Binary search state
+  const [lo, setLo] = useState(0);
+  const [hi, setHi] = useState(rankedGroup.length);
+  const [comparisonCount, setComparisonCount] = useState(0);
+  const [searchHistory, setSearchHistory] = useState<{ lo: number; hi: number }[]>([]);
+  const [forceSearchDone, setForceSearchDone] = useState(false);
+  // When user taps "Too Close", remember which memory the new one is tied with
+  // so the parent can persist the tied_group_id link on save.
+  const [tiedWithMemoryId, setTiedWithMemoryId] = useState<string | null>(null);
+
+  // Keep binary search bounds consistent with rankedGroup length —
+  // memories can load async, causing rankedGroup to recompute after mount.
+  useEffect(() => {
+    setLo(0);
+    setHi(rankedGroup.length);
+    setComparisonCount(0);
+    setSearchHistory([]);
+    setForceSearchDone(false);
+    setTiedWithMemoryId(null);
+  }, [rankedGroup.length]);
+
+  const isSearchDone = forceSearchDone || lo >= hi || comparisonCount >= MAX_COMPARISONS;
+  const midIndex = Math.floor((lo + hi) / 2);
+  const currentComparison = !isSearchDone && rankedGroup.length > 0 ? rankedGroup[midIndex] : null;
+
+  // Animation values
   const translateX = useSharedValue(0);
-  const borderProgress = useSharedValue(0); // -1 = red/worse, 0 = neutral, 1 = green/better
-  const cardScale = useSharedValue(1);
-  // useSharedValue instead of useState so gesture handlers read it synchronously on the UI thread
+  const borderProgress = useSharedValue(0);
   const isAnimating = useSharedValue(false);
 
-  const currentComparison = comparisons[currentIndex];
-  const isFinished = currentIndex >= totalComparisons;
+  const hasFinished = useRef(false);
 
   useEffect(() => {
-    if (totalComparisons > 0) {
-      onProgress(currentIndex / totalComparisons);
+    if (totalPossible > 0) {
+      onProgress(comparisonCount / totalPossible);
     }
-  }, [currentIndex, totalComparisons]);
+  }, [comparisonCount, totalPossible, onProgress]);
 
-  useEffect(() => {
-    if (isFinished) {
-      // Kick off the save immediately — the done screen shows a spinner while saving
-      onFinish();
-    }
-  }, [isFinished]);
 
   const triggerHaptic = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -74,71 +123,68 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
   const resetCard = useCallback(() => {
     translateX.value = 0;
     borderProgress.value = 0;
-    cardScale.value = 1;
     isAnimating.value = false;
   }, []);
 
-  const advanceToNext = useCallback((verdict: 'better' | 'worse' | 'skip') => {
-    if (currentComparison) {
-      setResults((prev) => [...prev, { memory: currentComparison, verdict }]);
+  const advanceSearch = useCallback((verdict: 'better' | 'worse') => {
+    setSearchHistory((prev) => [...prev, { lo, hi }]);
+    if (verdict === 'better') {
+      setLo(midIndex + 1);
+    } else {
+      setHi(midIndex);
     }
-    setCurrentIndex((prev) => prev + 1);
-    // Reset card for next comparison
+    setComparisonCount((prev) => prev + 1);
     setTimeout(resetCard, 50);
-  }, [currentComparison, resetCard]);
+  }, [lo, hi, midIndex, resetCard]);
 
   const undoLast = useCallback(() => {
-    if (currentIndex > 0) {
-      setCurrentIndex((prev) => prev - 1);
-      setResults((prev) => prev.slice(0, -1));
+    if (searchHistory.length > 0) {
+      const prev = searchHistory[searchHistory.length - 1];
+      setLo(prev.lo);
+      setHi(prev.hi);
+      setSearchHistory((h) => h.slice(0, -1));
+      setComparisonCount((c) => c - 1);
       resetCard();
     } else {
       onBack();
     }
-  }, [currentIndex, onBack, resetCard]);
+  }, [searchHistory, onBack, resetCard]);
 
   const animateSwipeOff = useCallback((direction: 'left' | 'right') => {
     isAnimating.value = true;
     const verdict = direction === 'right' ? 'better' : 'worse';
 
-    // Flash the border color
     borderProgress.value = withTiming(direction === 'right' ? 1 : -1, { duration: 150 });
-
-    // Haptic feedback
     triggerHaptic();
 
-    // Swipe card off screen
     translateX.value = withTiming(
       direction === 'right' ? SCREEN_WIDTH * 1.5 : -SCREEN_WIDTH * 1.5,
       { duration: 300, easing: Easing.out(Easing.cubic) },
       () => {
-        runOnJS(advanceToNext)(verdict);
-      }
+        runOnJS(advanceSearch)(verdict);
+      },
     );
-  }, [advanceToNext, triggerHaptic]);
+  }, [advanceSearch, triggerHaptic]);
 
   const panGesture = Gesture.Pan()
     .activeOffsetX([-15, 15])
     .failOffsetY([-10, 10])
-    // Prevent the parent step-navigation swipe from stealing this gesture
     .simultaneousWithExternalGesture()
     .onUpdate((e) => {
-      // Read isAnimating.value directly on the UI thread — no JS bridge delay
-      if (!isAnimating.value && !isFinished) {
+      if (!isAnimating.value && !isSearchDone) {
         translateX.value = e.translationX;
         const progress = Math.max(-1, Math.min(1, e.translationX / SWIPE_THRESHOLD));
         borderProgress.value = progress;
       }
     })
     .onEnd((e) => {
-      if (isAnimating.value || isFinished) return;
+      if (isAnimating.value || isSearchDone) return;
 
       if (e.translationX > SWIPE_THRESHOLD || e.velocityX > 500) {
         runOnJS(animateSwipeOff)('right');
       } else if (e.translationX < -SWIPE_THRESHOLD || e.velocityX < -500) {
         runOnJS(animateSwipeOff)('left');
       } else {
-        // Snap back
         translateX.value = withSpring(0, { damping: 15 });
         borderProgress.value = withTiming(0, { duration: 200 });
       }
@@ -155,14 +201,12 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
     const borderColor = interpolateColor(
       borderProgress.value,
       [-1, -0.1, 0, 0.1, 1],
-      [Colors.ratingPoor, Colors.ratingPoor, Colors.surfaceBorderLight, Colors.primary, Colors.primary]
+      [Colors.ratingPoor, Colors.ratingPoor, Colors.surfaceBorderLight, Colors.primary, Colors.primary],
     );
     const borderWidth = Math.abs(borderProgress.value) > 0.1 ? 2.5 : 1;
-
     return { borderColor, borderWidth };
   });
 
-  // Overlay labels that appear as you drag
   const betterLabelStyle = useAnimatedStyle(() => ({
     opacity: Math.max(0, borderProgress.value * 1.5),
   }));
@@ -171,7 +215,8 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
     opacity: Math.max(0, -borderProgress.value * 1.5),
   }));
 
-  if (isFinished) {
+  // ── Finished / no comparisons state ──
+  if (isSearchDone || rankedGroup.length === 0 || !currentComparison) {
     return (
       <View style={styles.container}>
         <View style={styles.doneWrap}>
@@ -184,8 +229,29 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
           ) : (
             <>
               <Ionicons name="checkmark-circle" size={48} color={Colors.primary} />
-              <Text style={styles.doneText}>All done!</Text>
-              <Text style={styles.doneSub}>Compared against {totalComparisons} memories</Text>
+              <Text style={styles.doneText}>Ready to save!</Text>
+              <Text style={styles.doneSub}>
+                {rankedGroup.length === 0
+                  ? memories.length <= 1
+                    ? 'Your first memory — nothing to compare yet!'
+                    : 'No similar memories to rank against.'
+                  : `Ranked against ${comparisonCount} ${comparisonCount === 1 ? 'memory' : 'memories'}`}
+              </Text>
+              <TouchableOpacity
+                style={styles.saveBtn}
+                onPress={() => {
+                  if (!hasFinished.current) {
+                    hasFinished.current = true;
+                    onFinish({
+                      insertionIndex: lo,
+                      rankedGroup,
+                      tiedWithMemoryId: tiedWithMemoryId ?? undefined,
+                    });
+                  }
+                }}
+              >
+                <Text style={styles.saveBtnText}>Save Memory</Text>
+              </TouchableOpacity>
             </>
           )}
         </View>
@@ -197,22 +263,22 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
     <GestureHandlerRootView style={styles.container}>
       {/* Counter */}
       <Text style={styles.counter}>
-        {currentIndex + 1} of {totalComparisons}
+        {comparisonCount + 1} of {totalPossible}
       </Text>
 
-      {/* Current restaurant — stays fixed */}
+      {/* New restaurant name */}
       <Text style={styles.currentName}>{restaurant.name}</Text>
       <Text style={styles.currentSub}>Your new experience</Text>
 
       {/* Comparison prompt */}
       <Text style={styles.prompt}>
-        Is{' '}
-        <Text style={styles.promptBold}>{currentComparison.restaurantName}</Text>
+        Was{' '}
+        <Text style={styles.promptBold}>{restaurant.name}</Text>
         {' '}better or worse than{' '}
-        <Text style={styles.promptBold}>{restaurant.name}</Text>?
+        <Text style={styles.promptBold}>{currentComparison.restaurantName}</Text>?
       </Text>
 
-      {/* Worse / Better labels */}
+      {/* Direction labels */}
       <View style={styles.labelRow}>
         <View style={styles.labelLeft}>
           <Ionicons name="arrow-back" size={16} color={Colors.ratingPoor} />
@@ -224,7 +290,7 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
         </View>
       </View>
 
-      {/* Swipeable card — shows the PAST memory being compared */}
+      {/* Swipeable comparison card */}
       <GestureDetector gesture={panGesture}>
         <Animated.View style={[styles.swipeCard, cardStyle, borderStyle]}>
           {/* Overlay verdict labels */}
@@ -235,7 +301,7 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
             <Text style={styles.verdictTextWorse}>WORSE</Text>
           </Animated.View>
 
-          {/* Card content — the past memory */}
+          {/* Card content */}
           <View style={styles.cardContent}>
             <Text style={styles.cardName}>{currentComparison.restaurantName}</Text>
             <Text style={styles.cardSub}>
@@ -255,9 +321,6 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
               <View style={styles.cardTag}>
                 <Text style={styles.cardTagText}>{currentComparison.occasionTag}</Text>
               </View>
-              <View style={styles.cardTag}>
-                <Text style={styles.cardTagText}>{currentComparison.moodTag}</Text>
-              </View>
             </View>
           </View>
         </Animated.View>
@@ -265,17 +328,22 @@ export default function StepCompare({ restaurant, onBack, onFinish, onProgress, 
 
       {/* Bottom controls */}
       <View style={styles.controls}>
-        <TouchableOpacity style={styles.controlBtn} onPress={undoLast}>
-          <Ionicons name="arrow-undo" size={22} color={Colors.textSecondary} />
-        </TouchableOpacity>
+        <GHTouchableOpacity style={styles.controlBtn} onPress={undoLast}>
+          <Ionicons name="arrow-undo" size={20} color={Colors.textSecondary} />
+        </GHTouchableOpacity>
 
-        <TouchableOpacity style={styles.skipBtn} onPress={() => { triggerHaptic(); advanceToNext('skip'); }}>
-          <Text style={styles.skipText}>Too Tough</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.controlBtn} onPress={() => { triggerHaptic(); advanceToNext('skip'); }}>
-          <Ionicons name="play-skip-forward" size={22} color={Colors.textSecondary} />
-        </TouchableOpacity>
+        <GHTouchableOpacity
+          style={styles.skipBtn}
+          onPress={() => {
+            triggerHaptic();
+            // Tie the new memory's score to the comparison memory's permanently.
+            setLo(midIndex);
+            setTiedWithMemoryId(currentComparison.id);
+            setForceSearchDone(true);
+          }}
+        >
+          <Text style={styles.skipText}>Too Close</Text>
+        </GHTouchableOpacity>
       </View>
     </GestureHandlerRootView>
   );
@@ -452,9 +520,9 @@ const styles = StyleSheet.create({
     marginTop: 24,
   },
   controlBtn: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: Colors.surfaceLight,
     alignItems: 'center',
     justifyContent: 'center',
@@ -485,5 +553,17 @@ const styles = StyleSheet.create({
   doneSub: {
     color: Colors.textSecondary,
     fontSize: 14,
+  },
+  saveBtn: {
+    marginTop: 24,
+    backgroundColor: Colors.primary,
+    paddingHorizontal: 32,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  saveBtnText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
   },
 });
