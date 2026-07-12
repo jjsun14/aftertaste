@@ -33,16 +33,27 @@ function makeSessionToken(): string {
   });
 }
 
-async function searchLocations(query: string, sessionToken: string): Promise<LocationSuggestion[]> {
+async function searchLocations(
+  query: string,
+  sessionToken: string,
+  proximity?: { lat: number; lng: number } | null,
+): Promise<LocationSuggestion[]> {
   if (!query.trim() || !MAPBOX_TOKEN) return [];
   const params = new URLSearchParams({
     q: query,
     access_token: MAPBOX_TOKEN,
     session_token: sessionToken,
-    types: 'country,region,postcode,place,locality,neighborhood,address,street',
+    // No 'country' (matches like "Liberia" for "Maryland" via Maryland
+    // County, Liberia) and no 'street' — city/region granularity is what
+    // the search bias needs.
+    types: 'region,postcode,district,place,locality,neighborhood,address',
     limit: '5',
     language: 'en',
   });
+  // Rank nearby matches first (e.g. your own zip above other cities')
+  if (proximity) {
+    params.set('proximity', `${proximity.lng},${proximity.lat}`);
+  }
   try {
     const res = await fetch(`${SEARCH_BOX_BASE}/suggest?${params}`);
     if (!res.ok) return [];
@@ -130,11 +141,11 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
       return;
     }
     const timer = setTimeout(async () => {
-      const suggestions = await searchLocations(locationInput, sessionTokenRef.current);
+      const suggestions = await searchLocations(locationInput, sessionTokenRef.current, userLocation);
       setLocationSuggestions(suggestions);
     }, 300);
     return () => clearTimeout(timer);
-  }, [locationInput, editingLocation]);
+  }, [locationInput, editingLocation, userLocation]);
 
   // Debounced search — fires 400ms after query or location changes.
   // Visited/bookmarked flags are applied at render time, so toggling a
@@ -221,7 +232,7 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
     setLocationLoading(true);
     setSearchError(null);
     try {
-      const suggestions = await searchLocations(input, sessionTokenRef.current);
+      const suggestions = await searchLocations(input, sessionTokenRef.current, userLocation);
       if (!suggestions.length) {
         Alert.alert('Location not found', `Couldn't find "${input}". Try a different format.`);
         setEditingLocation(true);

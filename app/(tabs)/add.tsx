@@ -224,14 +224,17 @@ export default function AddExperienceScreen() {
 
       // Use structured city/state from Foursquare locality/region fields.
       // Fallback: parse from address string if structured fields are missing.
-      const parsedCity = selectedRestaurant.city ?? (() => {
-        const parts = selectedRestaurant.address.split(',').map((p) => p.trim());
-        return parts.length >= 3 ? parts[parts.length - 2] : '';
-      })();
-      const parsedState = selectedRestaurant.state ?? (() => {
-        const parts = selectedRestaurant.address.split(',').map((p) => p.trim());
-        return parts.length >= 2 ? parts[parts.length - 1].replace(/\d+/g, '').trim() : '';
-      })();
+      // Purely numeric segments are dropped first — international addresses
+      // often put the street number after a comma ("Calle del Casino, 16"),
+      // which otherwise ends up as the "city".
+      const addressParts = selectedRestaurant.address
+        .split(',')
+        .map((p) => p.trim())
+        .filter((p) => p && !/^\d+$/.test(p));
+      const parsedCity = selectedRestaurant.city ??
+        (addressParts.length >= 3 ? addressParts[addressParts.length - 2] : '');
+      const parsedState = selectedRestaurant.state ??
+        (addressParts.length >= 2 ? addressParts[addressParts.length - 1].replace(/\d+/g, '').trim() : '');
 
       // Save new memory with its tier-calculated score
       await addMemory({
