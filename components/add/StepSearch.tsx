@@ -360,6 +360,7 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
                 address: item.address,
                 latitude: item.latitude,
                 longitude: item.longitude,
+                fsqPlaceId: item.id,
               });
             }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}

@@ -44,6 +44,7 @@ function rowToMemory(row: any): Memory {
     visits: (row.visits ?? []) as Visit[],
     photoDates: row.photo_dates ?? {},
     tiedGroupId: row.tied_group_id ?? null,
+    fsqPlaceId: row.fsq_place_id ?? null,
   };
 }
 
@@ -78,6 +79,7 @@ function memoryToRow(memory: Omit<Memory, 'id'>, userId: string) {
     visits: memory.visits ?? [],
     photo_dates: memory.photoDates ?? {},
     tied_group_id: memory.tiedGroupId ?? null,
+    fsq_place_id: memory.fsqPlaceId ?? null,
   };
 }
 
@@ -93,6 +95,7 @@ function rowToEntry(row: any): WantToTryEntry {
     state: row.state,
     latitude: row.latitude,
     longitude: row.longitude,
+    fsqPlaceId: row.fsq_place_id ?? null,
   };
 }
 
@@ -121,6 +124,7 @@ interface WantToTryContext {
     state?: string;
     latitude?: number;
     longitude?: number;
+    fsqPlaceId?: string;
   }) => Promise<void>;
   refetchWantToTry: () => Promise<void>;
 }
@@ -498,6 +502,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       state?: string;
       latitude?: number;
       longitude?: number;
+      fsqPlaceId?: string;
     }) => {
       if (!user) return;
       const existing = wantToTry.find(
@@ -526,6 +531,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           state: restaurant.state ?? '',
           latitude: restaurant.latitude ?? 0,
           longitude: restaurant.longitude ?? 0,
+          fsqPlaceId: restaurant.fsqPlaceId ?? null,
         };
         setWantToTry((prev) => [optimisticEntry, ...prev]);
         supabase
@@ -541,6 +547,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             state: restaurant.state ?? '',
             latitude: restaurant.latitude ?? 0,
             longitude: restaurant.longitude ?? 0,
+            fsq_place_id: restaurant.fsqPlaceId ?? null,
           })
           .select()
           .single()
