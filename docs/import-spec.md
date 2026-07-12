@@ -133,10 +133,14 @@ route keeps the queue flow independent. The route hosts:
   (currently StepLog hard-codes its useState defaults — small,
   backward-compatible change). Pre-fills pills from `prefill_rating`
   (same level on all three as a starting point), note, date.
-- StepCompare exactly as-is. **No new "Don't Remember" button needed**:
-  the existing UX already covers hazy memories — binary search caps at
-  MAX_COMPARISONS=5 (usually ~3 cards), and the **"Too Close" button
-  already ends the search early** with a tie to the current card.
+- StepCompare with one addition, an **import-only "Not sure" button**.
+  NOTE: "Too Close" is NOT an escape hatch — it makes a permanent
+  semantic claim ("equally good"): sets `tiedWithMemoryId`, producing a
+  tied group with identical scores preserved across redistributions.
+  Misusing it for hazy memories would create false ties. "Not sure"
+  instead does `setLo(midIndex); setForceSearchDone(true)` WITHOUT the
+  tie — coarse placement at the search's current midpoint, honest data,
+  rerank later. Binary search already caps effort at MAX_COMPARISONS=5.
 - The "truly can't remember at all" case is handled in the To Rate LIST,
   not the comparison screen (see row actions above): swipe →
   "Don't remember it" → remove, or move to Want to Try (re-discover it).
