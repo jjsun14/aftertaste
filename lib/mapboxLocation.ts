@@ -1,7 +1,7 @@
 /**
  * Mapbox Search Box helpers for LOCATION lookup (cities, regions, zips) —
  * used by the search-location picker in StepSearch and the import flow's
- * batch city bias. Restaurant search itself is Foursquare (lib/foursquare).
+ * batch city bias. Restaurant search itself is Google Places (lib/googlePlaces).
  */
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN ?? '';
 const SEARCH_BOX_BASE = 'https://api.mapbox.com/search/searchbox/v1';

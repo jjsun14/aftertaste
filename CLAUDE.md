@@ -1,7 +1,7 @@
 # Aftertaste
 
 ## Project Overview
-A React Native / Expo food journal app. Users log restaurant memories, rate meals, search nearby restaurants via Foursquare, and compare experiences.
+A React Native / Expo food journal app. Users log restaurant memories, rate meals, search nearby restaurants via Google Places, and compare experiences.
 
 ## IMPORTANT: Working Directory
 The real source code lives at: `/Users/jjsun/food-journey-app`
@@ -16,7 +16,7 @@ When in doubt, always check that files like `app/`, `components/`, `lib/`, `cont
 - **Language**: TypeScript
 - **Backend**: Supabase (auth + database + storage)
 - **Maps**: Mapbox (`@rnmapbox/maps`)
-- **Restaurant Search**: Foursquare Places API v3 (Bearer token in `.env`)
+- **Restaurant Search**: Google Places API (New) — `lib/googlePlaces.ts`, key `EXPO_PUBLIC_GOOGLE_PLACES_KEY` in `.env`. IMPORTANT: search field masks must stay Pro-tier only; priceLevel is fetched via a separate details call on selection (Enterprise tier). Old Foursquare integration (`lib/foursquare.ts`) kept as fallback — FSQ free tier dropped to 500 calls/mo in June 2026.
 - **Storage**: Supabase Storage bucket `memory-photos` (public)
 - **State**: React Context — `context/DataContext.tsx`, `context/AuthContext.tsx`
 
@@ -37,7 +37,9 @@ data/
 lib/
   supabase.ts         Supabase client
   uploadPhoto.ts      Photo upload to Supabase Storage
-  foursquare.ts       Foursquare Places API search
+  googlePlaces.ts     Restaurant search — Google Places API (New)
+  foursquare.ts       Fallback (unused) — Foursquare Places search
+  mapboxLocation.ts   City/location autocomplete (Mapbox Search Box)
 theme/
   colors.ts           App color palette
 ```
@@ -55,5 +57,5 @@ npx expo start --clear  # Start with cleared Metro cache (use when code changes 
 
 ## Current Status / Known Issues
 - Photo upload to Supabase Storage: uses `lib/uploadPhoto.ts` with pure-JS base64 decoder (no external deps needed). Always run `npx expo start --clear` after changing this file.
-- Foursquare search uses v3 API (`https://api.foursquare.com/v3/places/search`) with Bearer token auth.
+- Restaurant search: Google Places API (New) via POST places:searchText / places:searchNearby. Free tiers: 5K Pro calls/mo (searches), 1K Enterprise/mo (price details). Never add rating/hours/photo fields to search masks — it re-tiers the whole call.
 - Supabase Storage bucket `memory-photos` must exist and be public with RLS: INSERT `(auth.uid() IS NOT NULL)`, SELECT `(true)`.

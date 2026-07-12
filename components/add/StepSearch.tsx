@@ -15,7 +15,7 @@ import * as Location from 'expo-location';
 import { Colors } from '@/theme/colors';
 import { type SearchResult, type Memory } from '@/data/mockData';
 import { useMemories, useWantToTry } from '@/context/DataContext';
-import { searchFoursquarePlaces } from '@/lib/foursquare';
+import { searchGooglePlaces } from '@/lib/googlePlaces';
 import { makeSessionToken, searchLocations, retrieveLocation, type LocationSuggestion } from '@/lib/mapboxLocation';
 
 type SearchTab = 'all' | 'visited';
@@ -83,13 +83,16 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
       setSearchError(null);
       return;
     }
+    // A single character can't produce a useful match — don't spend an
+    // API call on it (2+ so CJK queries like 一蘭 still work).
+    if (query.trim().length === 1) return;
 
     const searchId = ++searchIdRef.current;
     const timer = setTimeout(async () => {
       setSearching(true);
       setSearchError(null);
       try {
-        const found = await searchFoursquarePlaces(
+        const found = await searchGooglePlaces(
           query.trim(),
           userLocation?.lat ?? null,
           userLocation?.lng ?? null,

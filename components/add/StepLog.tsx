@@ -71,7 +71,8 @@ export default function StepLog({ restaurant, onNext, onDataChange }: StepLogPro
   const [foodItems, setFoodItems] = useState('');
   const [occasion, setOccasion] = useState<OccasionTag>('Regular Meal');
   const [eateryType, setEateryType] = useState<EateryType>('Restaurant');
-  const [priceTier, setPriceTier] = useState<PriceTier>('$$');
+  const [priceTier, setPriceTier] = useState<PriceTier>(restaurant.priceTier ?? '$$');
+  const [priceTouched, setPriceTouched] = useState(false);
   const [taste, setTaste] = useState<RatingLevel>('Great');
   const [vibe, setVibe] = useState<RatingLevel>('Okay');
   const [value, setValue] = useState<RatingLevel>('Okay');
@@ -93,6 +94,15 @@ export default function StepLog({ restaurant, onNext, onDataChange }: StepLogPro
       return [...prev, { profileId: friend.profileId, displayName: friend.displayName }];
     });
   };
+
+  // Google's price level arrives async shortly after selection — adopt it
+  // as the starting value unless the user already picked a tier themselves.
+  useEffect(() => {
+    if (restaurant.priceTier && !priceTouched) {
+      setPriceTier(restaurant.priceTier);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurant.priceTier]);
 
   // Notify parent whenever any field changes
   const dateStr = visitDate.toISOString().split('T')[0];
@@ -307,7 +317,7 @@ export default function StepLog({ restaurant, onNext, onDataChange }: StepLogPro
             <TouchableOpacity
               key={tier}
               style={[styles.priceChip, priceTier === tier && styles.priceChipActive]}
-              onPress={() => setPriceTier(tier)}
+              onPress={() => { setPriceTouched(true); setPriceTier(tier); }}
             >
               <Text style={[styles.priceChipText, priceTier === tier && styles.priceChipTextActive]}>
                 {tier}

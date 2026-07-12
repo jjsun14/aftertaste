@@ -1,6 +1,6 @@
 /**
  * Import flow, phase 1a (spec: docs/import-spec.md).
- * Paste any list → parse → resolve against Foursquare → review matches →
+ * Paste any list → parse → resolve against Google Places → review matches →
  * add to Want to Try. Every created row carries an import_batch_id.
  */
 import React, { useState, useRef, useEffect } from 'react';
@@ -26,7 +26,7 @@ import { Colors } from '@/theme/colors';
 import { useMemories, useWantToTry } from '@/context/DataContext';
 import { parseImportText, type ParsedRow } from '@/lib/importParse';
 import { resolveRows, normalizeName, type ResolvedRow } from '@/lib/importResolve';
-import { searchFoursquarePlaces } from '@/lib/foursquare';
+import { searchGooglePlaces } from '@/lib/googlePlaces';
 import {
   makeSessionToken,
   searchLocations,
@@ -120,7 +120,7 @@ export default function ImportScreen() {
 
   const keptRows = parsed.filter((p) => p.kept).map((p) => p.row);
 
-  // ── Resolve the kept rows against Foursquare ──
+  // ── Resolve the kept rows against Google Places ──
   const handleStartMatching = async () => {
     const rows = keptRows;
     if (rows.length === 0) return;
@@ -165,7 +165,7 @@ export default function ImportScreen() {
     const q = newQuery.trim();
     if (!q) return;
     try {
-      const results = await searchFoursquarePlaces(q, bias?.lat ?? null, bias?.lng ?? null);
+      const results = await searchGooglePlaces(q, bias?.lat ?? null, bias?.lng ?? null);
       setResolved((prev) =>
         prev.map((r, i) => {
           if (i !== index) return r;

@@ -24,6 +24,7 @@ import { uploadPhoto } from '@/lib/uploadPhoto';
 import type { SearchResult, RatingLevel, Memory, Visit } from '@/data/mockData';
 import { determineTier, computeComposite, ratingToScore } from '@/data/mockData';
 import { planTierInsertion } from '@/lib/ranking';
+import { fetchPriceTier } from '@/lib/googlePlaces';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SWIPE_BACK_THRESHOLD = SCREEN_WIDTH * 0.25;
@@ -71,6 +72,16 @@ export default function AddExperienceScreen() {
     setSelectedRestaurant(result);
     setStep(2);
     position.value = withTiming(1, TIMING_CONFIG);
+    // Best-effort price prefill — one Enterprise-tier details call per
+    // selection (see lib/googlePlaces cost model). Never blocks the flow.
+    if (!result.priceTier) {
+      fetchPriceTier(result.id).then((priceTier) => {
+        if (!priceTier) return;
+        setSelectedRestaurant((prev) =>
+          prev && prev.id === result.id ? { ...prev, priceTier } : prev,
+        );
+      });
+    }
   };
 
   const handleQuickCheckin = async (existingMemory: Memory) => {

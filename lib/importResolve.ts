@@ -1,11 +1,11 @@
 /**
  * Import resolution (spec: docs/import-spec.md §3).
  *
- * Each parsed row → Foursquare search (food-filtered, biased by the batch
- * location) → confidence-scored candidates. Throttled so a large paste
- * can't burn the FSQ quota in one burst.
+ * Each parsed row → Google Places search (biased by the row's own
+ * location hint or the batch default) → confidence-scored candidates.
+ * Throttled so a large paste can't burn the API quota in one burst.
  */
-import { searchFoursquarePlaces } from '@/lib/foursquare';
+import { searchGooglePlaces } from '@/lib/googlePlaces';
 import { makeSessionToken, searchLocations, retrieveLocation } from '@/lib/mapboxLocation';
 import type { SearchResult } from '@/data/mockData';
 import type { ParsedRow } from '@/lib/importParse';
@@ -90,7 +90,7 @@ async function resolveOne(
 
   let results: SearchResult[] = [];
   try {
-    results = await searchFoursquarePlaces(row.name, bias?.lat ?? null, bias?.lng ?? null);
+    results = await searchGooglePlaces(row.name, bias?.lat ?? null, bias?.lng ?? null);
   } catch {
     // network/API failure → let the user retry from the review screen
   }
