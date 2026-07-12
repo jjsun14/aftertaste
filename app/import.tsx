@@ -270,7 +270,7 @@ export default function ImportScreen() {
       {phase === 'input' && (
         <View style={styles.body}>
           <Text style={styles.hint}>
-            Paste anything — a Notes list, spreadsheet cells, or a Google Takeout CSV. One place per line works best.
+            Paste your list — from Notes, a text, or cells copied out of a spreadsheet. One place per line. (CSV / Excel file upload coming soon.)
           </Text>
           <TextInput
             style={styles.pasteBox}
