@@ -76,23 +76,52 @@ function extractRating(line: string): { rest: string; rating?: number } {
   return { rest: line };
 }
 
+// ── Junk detection ─────────────────────────────────────────────────
+// People's lists carry structure that isn't places: rating rows
+// ("3.5  3.4  3.6 > 3.5"), rating-dimension headers ("value,
+// atmosphere, delicious"), section tags ("<meal>"). Formats are
+// infinite; junk is recognizable.
+const RATING_VOCAB = new Set([
+  'value', 'atmosphere', 'delicious', 'taste', 'vibe', 'vibes',
+  'rating', 'ratings', 'score', 'scores', 'food', 'and', 'overall',
+]);
+
+function isJunkLine(s: string): boolean {
+  const t = s.trim();
+  if (!t) return true;
+  // Section tags: <meal>, <dessert>, [breakfast], etc.
+  if (/^[<[][^>\]]*[>\]]$/.test(t)) return true;
+  // Score rows: almost nothing left once digits/punctuation are removed
+  const alpha = t.replace(/[\d.,;:>→\-–—*()/\\\s]+/g, '');
+  if (alpha.length < 2) return true;
+  // Rating-dimension headers: every word is rating vocabulary
+  const words = t.toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
+  if (words.length > 0 && words.every((w) => RATING_VOCAB.has(w))) return true;
+  return false;
+}
+
 // ── Freeform line → row ────────────────────────────────────────────
 const BULLET = /^\s*(?:[-–—•*]|\d+[.)])\s*/;
 const SEPARATORS = [' - ', ' – ', ' — ', ': ', ' | '];
 
 function parseFreeformLine(line: string): ParsedRow | null {
   const raw = line;
+  if (isJunkLine(line)) return null;
   let s = line.replace(BULLET, '').trim();
-  if (!s) return null;
+  if (!s || isJunkLine(s)) return null;
 
   const { rest, rating } = extractRating(s);
   s = rest.trim();
 
-  // Trailing parenthetical is treated as a location hint: "Katz's (LES)"
+  // Trailing parenthetical is tried as a location hint ("Katz's (LES)") —
+  // but it may be anything ("chick fil a (fries)"), so it's also kept as
+  // note text; a failed geocode just falls back to the batch area.
   let city: string | undefined;
+  let parenNote: string | undefined;
   const paren = s.match(/\(([^)]{2,30})\)\s*$/);
   if (paren) {
     city = paren[1].trim();
+    parenNote = paren[1].trim();
     s = s.slice(0, paren.index).trim();
   }
 
@@ -110,7 +139,8 @@ function parseFreeformLine(line: string): ParsedRow | null {
 
   name = name.replace(/[\s,;]+$/, '').trim();
   if (!name) return null;
-  return { raw, name, city, note, rating };
+  const fullNote = [note, parenNote].filter(Boolean).join(' · ') || undefined;
+  return { raw, name, city, note: fullNote, rating };
 }
 
 // ── Tabular (tab-separated or simple CSV with a header row) ────────

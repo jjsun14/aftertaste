@@ -24,7 +24,7 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import { Colors } from '@/theme/colors';
 import { useMemories, useWantToTry } from '@/context/DataContext';
-import { parseImportText } from '@/lib/importParse';
+import { parseImportText, type ParsedRow } from '@/lib/importParse';
 import { resolveRows, normalizeName, type ResolvedRow } from '@/lib/importResolve';
 import { searchFoursquarePlaces } from '@/lib/foursquare';
 import {
@@ -35,7 +35,7 @@ import {
 } from '@/lib/mapboxLocation';
 import type { SearchResult } from '@/data/mockData';
 
-type Phase = 'input' | 'resolving' | 'review' | 'done';
+type Phase = 'input' | 'preview' | 'resolving' | 'review' | 'done';
 
 export default function ImportScreen() {
   const insets = useSafeAreaInsets();
@@ -44,6 +44,7 @@ export default function ImportScreen() {
 
   const [phase, setPhase] = useState<Phase>('input');
   const [text, setText] = useState('');
+  const [parsed, setParsed] = useState<{ row: ParsedRow; kept: boolean }[]>([]);
   const [resolved, setResolved] = useState<ResolvedRow[]>([]);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [saving, setSaving] = useState(false);
@@ -97,8 +98,8 @@ export default function ImportScreen() {
     }
   };
 
-  // ── Parse + resolve ──
-  const handleFindPlaces = async () => {
+  // ── Parse → preview (no network yet) ──
+  const handleFindPlaces = () => {
     Keyboard.dismiss();
     const rows = parseImportText(text);
     if (rows.length === 0) {
@@ -109,6 +110,20 @@ export default function ImportScreen() {
       Alert.alert('Too many rows', `Found ${rows.length} places — imports are capped at 300 per batch. Split the list and run it twice.`);
       return;
     }
+    setParsed(rows.map((row) => ({ row, kept: true })));
+    setPhase('preview');
+  };
+
+  const toggleParsedRow = (index: number) => {
+    setParsed((prev) => prev.map((p, i) => (i === index ? { ...p, kept: !p.kept } : p)));
+  };
+
+  const keptRows = parsed.filter((p) => p.kept).map((p) => p.row);
+
+  // ── Resolve the kept rows against Foursquare ──
+  const handleStartMatching = async () => {
+    const rows = keptRows;
+    if (rows.length === 0) return;
 
     const existingKeys = new Set<string>([
       ...memories.map((m) => normalizeName(m.restaurantName)),
@@ -129,7 +144,7 @@ export default function ImportScreen() {
       setPhase('review');
     } catch (err: any) {
       Alert.alert('Could not match places', err.message ?? 'Something went wrong.');
-      setPhase('input');
+      setPhase('preview');
     }
   };
 
@@ -324,6 +339,48 @@ export default function ImportScreen() {
         </View>
       )}
 
+      {phase === 'preview' && (
+        <View style={styles.body}>
+          <Text style={styles.hint}>
+            Found {keptRows.length} place{keptRows.length === 1 ? '' : 's'} — tap anything that
+            isn&apos;t a restaurant to remove it. Nothing is searched yet.
+          </Text>
+          <FlatList
+            data={parsed}
+            keyExtractor={(item, i) => `${i}-${item.row.raw}`}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingBottom: 12 }}
+            renderItem={({ item, index }) => (
+              <TouchableOpacity
+                style={[styles.rowCard, !item.kept && styles.rowDim]}
+                onPress={() => toggleParsedRow(index)}
+              >
+                <Ionicons
+                  name={item.kept ? 'checkmark-circle' : 'close-circle-outline'}
+                  size={20}
+                  color={item.kept ? Colors.primary : Colors.textMuted}
+                />
+                <View style={styles.rowInfo}>
+                  <Text style={[styles.rowName, !item.kept && styles.rowStruck]}>{item.row.name}</Text>
+                  {(item.row.note || item.row.city) && (
+                    <Text style={styles.rowSub} numberOfLines={1}>
+                      {[item.row.city, item.row.note].filter(Boolean).join(' · ')}
+                    </Text>
+                  )}
+                </View>
+              </TouchableOpacity>
+            )}
+          />
+          <TouchableOpacity
+            style={[styles.primaryBtn, keptRows.length === 0 && styles.primaryBtnDisabled, { marginBottom: insets.bottom + 8 }]}
+            disabled={keptRows.length === 0}
+            onPress={handleStartMatching}
+          >
+            <Text style={styles.primaryBtnText}>Match {keptRows.length} place{keptRows.length === 1 ? '' : 's'}</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {phase === 'resolving' && (
         <View style={styles.centerWrap}>
           <ActivityIndicator size="large" color={Colors.primary} />
@@ -511,6 +568,7 @@ const styles = StyleSheet.create({
   rowDim: { opacity: 0.45 },
   rowInfo: { flex: 1 },
   rowName: { color: Colors.textPrimary, fontSize: 14, fontWeight: '600', marginBottom: 2 },
+  rowStruck: { textDecorationLine: 'line-through', color: Colors.textMuted },
   rowSub: { color: Colors.textSecondary, fontSize: 12 },
   candidateRow: {
     flexDirection: 'row',
