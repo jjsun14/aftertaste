@@ -22,7 +22,8 @@ import { useMemories } from '@/context/DataContext';
 import { useAuth } from '@/context/AuthContext';
 import { uploadPhoto } from '@/lib/uploadPhoto';
 import type { SearchResult, RatingLevel, Memory, Visit } from '@/data/mockData';
-import { determineTier, newTiedGroupId, recalculateTierScores, computeComposite, ratingToScore } from '@/data/mockData';
+import { determineTier, computeComposite, ratingToScore } from '@/data/mockData';
+import { planTierInsertion } from '@/lib/ranking';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SWIPE_BACK_THRESHOLD = SCREEN_WIDTH * 0.25;
@@ -192,44 +193,20 @@ export default function AddExperienceScreen() {
       const preliminaryComposite = computeComposite(tasteScore, vibeScore, valueScore, scorePreference);
       const tier = determineTier(preliminaryComposite);
 
-      // Build ranked list and insert new memory at binary search position
-      const rankedGroup = rankingResult?.rankedGroup ?? [];
-      const insertionIndex = rankingResult?.insertionIndex ?? 0;
-      const tiedWithMemoryId = rankingResult?.tiedWithMemoryId;
-
-      // Resolve tied_group_id for the new memory (and possibly its partner).
-      let newMemoryTiedGroupId: string | null = null;
-      let partnerTiedGroupUpdate: { id: string; tiedGroupId: string } | null = null;
-      if (tiedWithMemoryId) {
-        const partner = rankedGroup.find((m) => m.id === tiedWithMemoryId);
-        if (partner?.tiedGroupId) {
-          newMemoryTiedGroupId = partner.tiedGroupId;
-        } else if (partner) {
-          const fresh = newTiedGroupId();
-          newMemoryTiedGroupId = fresh;
-          partnerTiedGroupUpdate = { id: partner.id, tiedGroupId: fresh };
-        }
-      }
-
-      const rankedItems: { id: string; tiedGroupId?: string | null }[] = rankedGroup.map((m) => ({
-        id: m.id,
-        tiedGroupId:
-          partnerTiedGroupUpdate && m.id === partnerTiedGroupUpdate.id
-            ? partnerTiedGroupUpdate.tiedGroupId
-            : m.tiedGroupId ?? null,
-      }));
-      rankedItems.splice(insertionIndex, 0, { id: 'NEW', tiedGroupId: newMemoryTiedGroupId });
-
-      // Redistribute scores across the tier+eateryType group
-      const newScores = recalculateTierScores(rankedItems, tier);
-      const newMemoryScore = newScores.find((s) => s.id === 'NEW')?.compositeScore ?? preliminaryComposite;
-      const otherUpdates = newScores
-        .filter((s) => s.id !== 'NEW')
-        .map((s) =>
-          partnerTiedGroupUpdate && s.id === partnerTiedGroupUpdate.id
-            ? { ...s, tiedGroupId: partnerTiedGroupUpdate.tiedGroupId }
-            : s,
-        );
+      // Insert the new memory at the binary-search position and
+      // redistribute scores across its tier+eateryType group
+      const {
+        selfScore: newMemoryScore,
+        selfTiedGroupId: newMemoryTiedGroupId,
+        peerUpdates: otherUpdates,
+      } = planTierInsertion({
+        selfId: 'NEW',
+        insertionIndex: rankingResult?.insertionIndex ?? 0,
+        rankedGroup: rankingResult?.rankedGroup ?? [],
+        tier,
+        tiedWithMemoryId: rankingResult?.tiedWithMemoryId,
+        fallbackScore: preliminaryComposite,
+      });
 
       // Build squad from app friends + free-text names
       const friendSquad = (logData.squadFriends ?? []).map((f) => ({

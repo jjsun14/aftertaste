@@ -9,11 +9,10 @@ import StepCompare from '@/components/add/StepCompare';
 import { useMemories } from '@/context/DataContext';
 import {
   determineTier,
-  newTiedGroupId,
-  recalculateTierScores,
   type Memory,
   type SearchResult,
 } from '@/data/mockData';
+import { planTierInsertion } from '@/lib/ranking';
 
 export default function RerankScreen() {
   const {
@@ -80,63 +79,22 @@ export default function RerankScreen() {
     try {
       const tier = determineTier(effectiveScore);
 
-      // Resolve the new memory's tied_group_id (and possibly the partner's).
-      // Three cases:
-      //   1. Not tied: tiedGroupId = null, no partner update.
-      //   2. Tied with a partner that already has a group: reuse its id.
-      //   3. Tied with a previously-untied partner: mint a new group id and
-      //      assign it to BOTH the new memory and the partner.
-      let newMemoryTiedGroupId: string | null = null;
-      let partnerTiedGroupUpdate: { id: string; tiedGroupId: string } | null = null;
-      if (result.tiedWithMemoryId) {
-        const partner = result.rankedGroup.find((m) => m.id === result.tiedWithMemoryId);
-        if (partner?.tiedGroupId) {
-          newMemoryTiedGroupId = partner.tiedGroupId;
-        } else if (partner) {
-          const fresh = newTiedGroupId();
-          newMemoryTiedGroupId = fresh;
-          partnerTiedGroupUpdate = { id: partner.id, tiedGroupId: fresh };
-        }
-      }
-
-      // If this memory was previously tied with someone and we're NOT keeping
-      // that tie (different partner this round, or no tie at all), the old
-      // partner(s) may be orphaned. If only one member of the old group
-      // remains, clear its tiedGroupId.
-      const oldTiedGroupId = memory.tiedGroupId ?? null;
-      const orphanedTiedIds = new Set<string>();
-      if (oldTiedGroupId && oldTiedGroupId !== newMemoryTiedGroupId) {
-        const remainingInOldGroup = result.rankedGroup.filter((m) => m.tiedGroupId === oldTiedGroupId);
-        if (remainingInOldGroup.length === 1) {
-          orphanedTiedIds.add(remainingInOldGroup[0].id);
-        }
-      }
-
-      // Build ranked items with tiedGroupId so recalc can collapse tied slots.
-      const rankedItems: { id: string; tiedGroupId?: string | null }[] = result.rankedGroup.map((m) => {
-        if (orphanedTiedIds.has(m.id)) return { id: m.id, tiedGroupId: null };
-        if (partnerTiedGroupUpdate && m.id === partnerTiedGroupUpdate.id) {
-          return { id: m.id, tiedGroupId: partnerTiedGroupUpdate.tiedGroupId };
-        }
-        return { id: m.id, tiedGroupId: m.tiedGroupId ?? null };
-      });
-      rankedItems.splice(result.insertionIndex, 0, {
-        id: memory.id,
-        tiedGroupId: newMemoryTiedGroupId,
+      // Re-insert this memory at the binary-search position; shared helper
+      // handles tie creation and orphaned-tie cleanup.
+      const { selfScore, selfTiedGroupId, peerUpdates } = planTierInsertion({
+        selfId: memory.id,
+        insertionIndex: result.insertionIndex,
+        rankedGroup: result.rankedGroup,
+        tier,
+        tiedWithMemoryId: result.tiedWithMemoryId,
+        selfOldTiedGroupId: memory.tiedGroupId ?? null,
+        fallbackScore: effectiveScore,
       });
 
-      const newScores = recalculateTierScores(rankedItems, tier);
-
-      // Attach tiedGroupId writes for the memories whose group membership changed.
-      const scoresWithTied = newScores.map((s) => {
-        if (s.id === memory.id) return { ...s, tiedGroupId: newMemoryTiedGroupId };
-        if (partnerTiedGroupUpdate && s.id === partnerTiedGroupUpdate.id) {
-          return { ...s, tiedGroupId: partnerTiedGroupUpdate.tiedGroupId };
-        }
-        if (orphanedTiedIds.has(s.id)) return { ...s, tiedGroupId: null };
-        return s;
-      });
-      await batchUpdateCompositeScores(scoresWithTied);
+      await batchUpdateCompositeScores([
+        ...peerUpdates,
+        { id: memory.id, compositeScore: selfScore, tiedGroupId: selfTiedGroupId },
+      ]);
 
       // Write pending rating fields that were held back until rerank completes.
       if (pendingTaste && pendingVibe && pendingValue) {
