@@ -5,6 +5,11 @@ const FSQ_API_KEY = process.env.EXPO_PUBLIC_FOURSQUARE_API_KEY ?? '';
 const FSQ_BASE = 'https://places-api.foursquare.com';
 const FSQ_API_VERSION = '2025-06-17';
 
+// "Dining and Drinking" root category. NOTE: this API version ignores the old
+// `categories=13000` integer param — it must be `fsq_category_ids` with the
+// hex id, otherwise results are completely unfiltered (law firms, salons...).
+const FOOD_CATEGORY_ID = '4d4b7105d754a06374d81259';
+
 interface FSQPlace {
   fsq_place_id: string;
   name: string;
@@ -37,11 +42,9 @@ function cleanCategory(place: FSQPlace): string {
 /**
  * Search Foursquare Places (FSQ OS) for restaurants/food venues.
  *
- * @param query          - free-text search (e.g. "pizza", "ramen")
- * @param lat            - optional user latitude for nearby ranking
- * @param lng            - optional user longitude
- * @param visitedNames   - Set of restaurant names already in the user's memories
- * @param bookmarkedNames - Set of restaurant names in the user's want-to-try list
+ * @param query - free-text search (e.g. "pizza", "ramen"); empty = browse nearby
+ * @param lat   - optional user latitude for nearby ranking
+ * @param lng   - optional user longitude
  */
 async function fetchFSQ(
   params: URLSearchParams,
@@ -63,11 +66,7 @@ async function fetchFSQ(
   return json.results ?? [];
 }
 
-function mapPlaces(
-  places: FSQPlace[],
-  visitedNames: Set<string>,
-  bookmarkedNames: Set<string>,
-): SearchResult[] {
+function mapPlaces(places: FSQPlace[]): SearchResult[] {
   return places.map((place): SearchResult => {
     const address =
       place.location.formatted_address ??
@@ -93,8 +92,10 @@ function mapPlaces(
       priceTier: undefined,
       latitude: place.latitude,
       longitude: place.longitude,
-      isVisited: visitedNames.has(place.name),
-      isBookmarked: bookmarkedNames.has(place.name),
+      // Flags are applied at render time in StepSearch, so toggling a
+      // bookmark doesn't have to re-run the whole search.
+      isVisited: false,
+      isBookmarked: false,
     };
   });
 }
@@ -103,25 +104,39 @@ export async function searchFoursquarePlaces(
   query: string,
   lat: number | null,
   lng: number | null,
-  visitedNames: Set<string>,
-  bookmarkedNames: Set<string>,
 ): Promise<SearchResult[]> {
   const hasLocation = lat !== null && lng !== null;
   const hasQuery = query.trim().length > 0;
 
-  // Strategy: start with a tight radius for nearby results, expand if too few
+  // Typed query → one call, relevance-ranked, no radius cap.
+  // RELEVANCE blends name-match quality with proximity (ll), so the exact
+  // match 6km away beats a weak match around the corner — a radius cap
+  // would silently exclude it whenever the closer ring has enough results.
+  if (hasQuery) {
+    const params = new URLSearchParams({
+      query: query.trim(),
+      fsq_category_ids: FOOD_CATEGORY_ID,
+      limit: '50',
+    });
+    if (hasLocation) {
+      params.set('ll', `${lat},${lng}`);
+      params.set('sort', 'RELEVANCE');
+    }
+    return mapPlaces(await fetchFSQ(params));
+  }
+
+  // Browse (no query) → nearest food places, expanding the radius if sparse.
+  // Category-only search returns the full food/drink mix (pubs, taco stands,
+  // steakhouses) instead of only places matching a filler word.
   const RADII = [5000, 15000, 40000]; // ~3mi, ~9mi, ~25mi
   const INITIAL_LIMIT = '20';  // Faster initial load; user can refine with search
   const MIN_RESULTS = 5;
 
   if (hasLocation) {
     for (const radius of RADII) {
-      // Use lower limit for generic browse, full limit when user typed a query
-      const limit = hasQuery ? '50' : INITIAL_LIMIT;
       const params = new URLSearchParams({
-        query: query || 'restaurant',
-        categories: '13000',
-        limit,
+        fsq_category_ids: FOOD_CATEGORY_ID,
+        limit: INITIAL_LIMIT,
         ll: `${lat},${lng}`,
         radius: String(radius),
         sort: 'DISTANCE',
@@ -129,26 +144,9 @@ export async function searchFoursquarePlaces(
 
       const places = await fetchFSQ(params);
       if (places.length >= MIN_RESULTS || radius === RADII[RADII.length - 1]) {
-        return mapPlaces(places, visitedNames, bookmarkedNames);
+        return mapPlaces(places);
       }
     }
-  }
-
-  // No location or location search returned nothing — do a text-only search
-  // This is important for international searches where GPS might be off
-  if (hasQuery) {
-    const params = new URLSearchParams({
-      query,
-      categories: '13000',
-      limit: '50',
-    });
-    if (hasLocation) {
-      // Still pass location for distance sorting but no radius restriction
-      params.set('ll', `${lat},${lng}`);
-      params.set('sort', 'DISTANCE');
-    }
-    const places = await fetchFSQ(params);
-    return mapPlaces(places, visitedNames, bookmarkedNames);
   }
 
   return [];

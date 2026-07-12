@@ -103,6 +103,8 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
   const locationInputRef = useRef<TextInput>(null);
   const listRef = useRef<FlatList>(null);
   const sessionTokenRef = useRef<string>(makeSessionToken());
+  // Increments per search; lets late responses from older searches be ignored
+  const searchIdRef = useRef(0);
 
   const { isBookmarked, toggleBookmark, entries: wantToTryEntries } = useWantToTry();
   const { memories } = useMemories();
@@ -134,7 +136,9 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
     return () => clearTimeout(timer);
   }, [locationInput, editingLocation]);
 
-  // Debounced search — fires 400ms after query or location changes
+  // Debounced search — fires 400ms after query or location changes.
+  // Visited/bookmarked flags are applied at render time, so toggling a
+  // bookmark or adding a memory never re-runs the network search.
   useEffect(() => {
     if (!query.trim() && !userLocation) {
       setResults([]);
@@ -142,29 +146,31 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
       return;
     }
 
-    const searchQuery = query.trim() || 'restaurant';
+    const searchId = ++searchIdRef.current;
     const timer = setTimeout(async () => {
       setSearching(true);
       setSearchError(null);
       try {
         const found = await searchFoursquarePlaces(
-          searchQuery,
+          query.trim(),
           userLocation?.lat ?? null,
           userLocation?.lng ?? null,
-          visitedNames,
-          bookmarkedNames,
         );
+        // Typed and browse searches take different numbers of round-trips,
+        // so an older response can land after a newer one — drop it.
+        if (searchId !== searchIdRef.current) return;
         setResults(found);
       } catch (err: any) {
+        if (searchId !== searchIdRef.current) return;
         setSearchError(err.message ?? 'Search failed');
         setResults([]);
       } finally {
-        setSearching(false);
+        if (searchId === searchIdRef.current) setSearching(false);
       }
     }, query.trim() ? 400 : 0); // no debounce for initial location load
 
     return () => clearTimeout(timer);
-  }, [query, userLocation, visitedNames, bookmarkedNames]);
+  }, [query, userLocation]);
 
   const requestCurrentLocation = async () => {
     setLocationLoading(true);
@@ -272,18 +278,24 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
     await requestCurrentLocation();
   };
 
-  // Filter results based on active tab
+  // Apply visited/bookmarked flags at render time, then filter by tab
   const displayedResults = useMemo(() => {
-    if (activeTab === 'visited') return results.filter((r) => r.isVisited);
-    return results;
-  }, [results, activeTab]);
+    const flagged = results.map((r) => ({
+      ...r,
+      isVisited: visitedNames.has(r.name),
+      isBookmarked: bookmarkedNames.has(r.name),
+    }));
+    if (activeTab === 'visited') return flagged.filter((r) => r.isVisited);
+    return flagged;
+  }, [results, activeTab, visitedNames, bookmarkedNames]);
 
-  // Scroll results list back to top whenever results change
+  // Scroll back to top when a new search lands (raw results, not the
+  // flagged view — a bookmark toggle shouldn't jump the list to the top)
   useEffect(() => {
-    if (displayedResults.length > 0) {
+    if (results.length > 0) {
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
     }
-  }, [displayedResults]);
+  }, [results]);
 
   const renderItem = ({ item }: { item: SearchResult }) => {
     const bookmarked = isBookmarked(item.name, item.address);
