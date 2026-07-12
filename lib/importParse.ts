@@ -11,7 +11,8 @@
 export interface ParsedRow {
   raw: string;      // original line (debugging / re-parse)
   name: string;     // best-guess restaurant name → FSQ query
-  city?: string;    // per-row location hint, overrides batch bias display
+  city?: string;    // per-row location hint, overrides batch bias
+  coords?: { lat: number; lng: number }; // exact hint (e.g. from a Maps URL) — beats city
   note?: string;    // free text carried into the entry later
   rating?: number;  // normalized to 0–10 when detected (unused in WTT phase)
 }
@@ -22,7 +23,30 @@ const HEADER_SYNONYMS: Record<string, RegExp> = {
   city: /^(city|town|location|area|where)$/i,
   rating: /^(rating|score|stars?|rank)$/i,
   note: /^(note|notes|comment|comments|review|description)$/i,
+  url: /^(url|link|maps? ?(url|link)?)$/i,
 };
+
+/**
+ * Google Maps URLs (e.g. from Takeout CSVs) often embed the coordinates
+ * even though the CSV has no location columns: `/@lat,lng,15z`,
+ * `!3dlat!4dlng` data blobs, or dropped pins as `/maps/search/lat,lng`.
+ */
+function coordsFromUrl(url: string): { lat: number; lng: number } | undefined {
+  const patterns = [
+    /@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/,
+    /!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/,
+    /maps\/search\/(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)/,
+  ];
+  for (const re of patterns) {
+    const m = url.match(re);
+    if (m) {
+      const lat = parseFloat(m[1]);
+      const lng = parseFloat(m[2]);
+      if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) return { lat, lng };
+    }
+  }
+  return undefined;
+}
 
 function classifyHeader(cell: string): string | null {
   const trimmed = cell.trim();
@@ -121,6 +145,7 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
   const cityIdx = columns.indexOf('city');
   const ratingIdx = columns.indexOf('rating');
   const noteIdx = columns.indexOf('note');
+  const urlIdx = columns.indexOf('url');
 
   const dataLines = hasHeader ? lines.slice(1) : lines;
   if (nameIdx === -1) nameIdx = 0; // convention: first column is the name
@@ -142,10 +167,19 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
       }
     }
 
+    // Coordinates hidden in a Maps URL (explicit URL column, or any
+    // http(s) cell) give this row an exact location hint.
+    let coords: { lat: number; lng: number } | undefined;
+    const urlCell =
+      (urlIdx !== -1 ? cells[urlIdx] : undefined) ??
+      cells.find((c) => /^https?:\/\//i.test(c));
+    if (urlCell) coords = coordsFromUrl(urlCell);
+
     rows.push({
       raw: line,
       name,
       city: cityIdx !== -1 ? cells[cityIdx]?.trim() || undefined : undefined,
+      coords,
       note: noteIdx !== -1 ? cells[noteIdx]?.trim() || undefined : undefined,
       rating,
     });

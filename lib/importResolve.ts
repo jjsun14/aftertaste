@@ -6,6 +6,7 @@
  * can't burn the FSQ quota in one burst.
  */
 import { searchFoursquarePlaces } from '@/lib/foursquare';
+import { makeSessionToken, searchLocations, retrieveLocation } from '@/lib/mapboxLocation';
 import type { SearchResult } from '@/data/mockData';
 import type { ParsedRow } from '@/lib/importParse';
 
@@ -51,12 +52,42 @@ function matchScore(query: string, candidate: string): number {
   return hits / Math.max(qt.size, 1) * 0.8;
 }
 
+type Coords = { lat: number; lng: number };
+
+/**
+ * Geocode a row's own city hint ("Carbone (NYC)", a City column) so that
+ * row is matched THERE instead of at the batch default — lists routinely
+ * span many cities. Results are cached per unique city string.
+ */
+async function geocodeCity(city: string, cache: Map<string, Coords | null>): Promise<Coords | null> {
+  const key = city.trim().toLowerCase();
+  if (!key) return null;
+  if (cache.has(key)) return cache.get(key)!;
+  let coords: Coords | null = null;
+  try {
+    const token = makeSessionToken();
+    const suggestions = await searchLocations(city, token);
+    if (suggestions.length > 0) {
+      const place = await retrieveLocation(suggestions[0].mapbox_id, token);
+      if (place) coords = { lat: place.lat, lng: place.lng };
+    }
+  } catch { /* fall back to batch bias */ }
+  cache.set(key, coords);
+  return coords;
+}
+
 async function resolveOne(
   row: ParsedRow,
-  bias: { lat: number; lng: number } | null,
+  batchBias: Coords | null,
+  cityCache: Map<string, Coords | null>,
   existingKeys: Set<string>,
   existingFsqIds: Set<string>,
 ): Promise<ResolvedRow> {
+  // Location precedence: exact coords from a Maps URL → the row's own
+  // city hint (geocoded) → the batch default.
+  const rowBias = row.coords ?? (row.city ? await geocodeCity(row.city, cityCache) : null);
+  const bias = rowBias ?? batchBias;
+
   let results: SearchResult[] = [];
   try {
     results = await searchFoursquarePlaces(row.name, bias?.lat ?? null, bias?.lng ?? null);
@@ -113,13 +144,14 @@ export async function resolveRows(
   });
 
   const out: ResolvedRow[] = new Array(unique.length);
+  const cityCache = new Map<string, Coords | null>();
   let next = 0;
   let done = 0;
 
   async function worker() {
     while (next < unique.length) {
       const i = next++;
-      out[i] = await resolveOne(unique[i], bias, existingKeys, existingFsqIds);
+      out[i] = await resolveOne(unique[i], bias, cityCache, existingKeys, existingFsqIds);
       done++;
       onProgress?.(done, unique.length);
     }

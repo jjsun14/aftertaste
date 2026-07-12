@@ -307,7 +307,9 @@ export default function ImportScreen() {
           ) : (
             <TouchableOpacity style={styles.biasPill} onPress={() => setEditingBias(true)}>
               <Ionicons name="location" size={14} color={Colors.purple} />
-              <Text style={styles.biasPillText} numberOfLines={1}>Match near: {biasLabel}</Text>
+              <Text style={styles.biasPillText} numberOfLines={1}>
+                Default area: {biasLabel} — lines with their own city override this
+              </Text>
               <Ionicons name="pencil-outline" size={13} color={Colors.textMuted} />
             </TouchableOpacity>
           )}
