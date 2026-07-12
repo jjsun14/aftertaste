@@ -11,7 +11,7 @@ Core principles (settled during design):
    queue, not scoreless memories. Memory model keeps non-null scores.
 3. **Every "been here" import graduates through the real Add Experience flow**
    (pre-filled, so it's taps not typing). Rating pills always required;
-   comparison *precision* is skippable ("Don't Remember").
+   comparisons run unchanged against rated memories only.
 4. **The parser proposes, Foursquare disambiguates, the human confirms.**
    Parse errors must be visible and recoverable, never silent.
 
@@ -133,14 +133,13 @@ route keeps the queue flow independent. The route hosts:
   (currently StepLog hard-codes its useState defaults — small,
   backward-compatible change). Pre-fills pills from `prefill_rating`
   (same level on all three as a starting point), note, date.
-- StepCompare with one addition, an **import-only "Not sure" button**.
-  NOTE: "Too Close" is NOT an escape hatch — it makes a permanent
-  semantic claim ("equally good"): sets `tiedWithMemoryId`, producing a
-  tied group with identical scores preserved across redistributions.
-  Misusing it for hazy memories would create false ties. "Not sure"
-  instead does `setLo(midIndex); setForceSearchDone(true)` WITHOUT the
-  tie — coarse placement at the search's current midpoint, honest data,
-  rerank later. Binary search already caps effort at MAX_COMPARISONS=5.
+- StepCompare **completely unchanged**. The comparison pool is, by
+  construction, only real rated memories (queue rows are not memories,
+  so an unrated import can never appear as a comparison card). If the
+  user can't engage with comparisons at all, the place shouldn't be
+  graduating — that's what the To Rate list's "don't remember" action
+  is for (delete, or move to Want to Try). "Too Close" keeps its one
+  true meaning: a permanent equal-score tie.
 - The "truly can't remember at all" case is handled in the To Rate LIST,
   not the comparison screen (see row actions above): swipe →
   "Don't remember it" → remove, or move to Want to Try (re-discover it).
