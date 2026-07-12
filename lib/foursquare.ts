@@ -5,10 +5,14 @@ const FSQ_API_KEY = process.env.EXPO_PUBLIC_FOURSQUARE_API_KEY ?? '';
 const FSQ_BASE = 'https://places-api.foursquare.com';
 const FSQ_API_VERSION = '2025-06-17';
 
-// "Dining and Drinking" root category. NOTE: this API version ignores the old
-// `categories=13000` integer param — it must be `fsq_category_ids` with the
-// hex id, otherwise results are completely unfiltered (law firms, salons...).
-const FOOD_CATEGORY_ID = '4d4b7105d754a06374d81259';
+// "Dining and Drinking" root category (NEW taxonomy). Two traps here:
+//  - integer ids like `categories=13000` are rejected by this API version;
+//    it must be `fsq_category_ids` with a hex id.
+//  - the LEGACY v2 "Food" root (4d4b7105d754a06374d81259) silently excludes
+//    everything that moved in the taxonomy reorg: cafés, coffee shops,
+//    bakeries, all bars, breweries, dessert shops, food trucks, juice bars.
+//    Verified empirically against the live API (July 2026).
+const FOOD_CATEGORY_ID = '63be6904847c3692a84b9bb5';
 
 interface FSQPlace {
   fsq_place_id: string;
@@ -108,21 +112,44 @@ export async function searchFoursquarePlaces(
   const hasLocation = lat !== null && lng !== null;
   const hasQuery = query.trim().length > 0;
 
-  // Typed query → one call, relevance-ranked, no radius cap.
-  // RELEVANCE blends name-match quality with proximity (ll), so the exact
-  // match 6km away beats a weak match around the corner — a radius cap
-  // would silently exclude it whenever the closer ring has enough results.
+  // Typed query → two calls in parallel, merged:
+  //  1. RELEVANCE, no radius: strong matches ranked best-first, including
+  //     exact matches far away (never cut off by a radius ring).
+  //  2. DISTANCE within 40km: rescues weak/partial matches that RELEVANCE
+  //     drops when they aren't close (verified: "septim" 2.4km from
+  //     Septime returns 0 under RELEVANCE but matches under DISTANCE).
+  // Relevance results lead; distance-only extras are appended (deduped).
   if (hasQuery) {
-    const params = new URLSearchParams({
+    const base = {
       query: query.trim(),
       fsq_category_ids: FOOD_CATEGORY_ID,
       limit: '50',
-    });
-    if (hasLocation) {
-      params.set('ll', `${lat},${lng}`);
-      params.set('sort', 'RELEVANCE');
+    };
+
+    if (!hasLocation) {
+      return mapPlaces(await fetchFSQ(new URLSearchParams(base)));
     }
-    return mapPlaces(await fetchFSQ(params));
+
+    const relevanceParams = new URLSearchParams({
+      ...base,
+      ll: `${lat},${lng}`,
+      sort: 'RELEVANCE',
+    });
+    const nearbyParams = new URLSearchParams({
+      ...base,
+      ll: `${lat},${lng}`,
+      radius: '40000',
+      sort: 'DISTANCE',
+    });
+
+    const [relevant, nearby] = await Promise.all([
+      fetchFSQ(relevanceParams),
+      fetchFSQ(nearbyParams),
+    ]);
+
+    const seen = new Set(relevant.map((p) => p.fsq_place_id));
+    const merged = [...relevant, ...nearby.filter((p) => !seen.has(p.fsq_place_id))];
+    return mapPlaces(merged);
   }
 
   // Browse (no query) → nearest food places, expanding the radius if sparse.
