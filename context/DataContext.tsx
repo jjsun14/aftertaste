@@ -126,6 +126,19 @@ interface WantToTryContext {
     longitude?: number;
     fsqPlaceId?: string;
   }) => Promise<void>;
+  addWantToTryBatch: (
+    restaurants: {
+      name: string;
+      address: string;
+      city?: string;
+      state?: string;
+      latitude?: number;
+      longitude?: number;
+      fsqPlaceId?: string;
+      cuisineType?: string;
+    }[],
+    importBatchId: string,
+  ) => Promise<number>;
   refetchWantToTry: () => Promise<void>;
 }
 
@@ -567,6 +580,46 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [user, wantToTry]
   );
 
+  // Bulk insert for the import flow — one INSERT for the whole batch,
+  // every row tagged with the import_batch_id so a bad import can be
+  // undone with a single DELETE.
+  const addWantToTryBatch = useCallback(
+    async (
+      restaurants: {
+        name: string;
+        address: string;
+        city?: string;
+        state?: string;
+        latitude?: number;
+        longitude?: number;
+        fsqPlaceId?: string;
+        cuisineType?: string;
+      }[],
+      importBatchId: string,
+    ): Promise<number> => {
+      if (!user || restaurants.length === 0) return 0;
+      const rows = restaurants.map((r) => ({
+        user_id: user.id,
+        restaurant_name: r.name,
+        price_tier: '$',
+        eatery_type: 'Restaurant',
+        cuisine_type: r.cuisineType || 'Restaurant',
+        address: r.address,
+        city: r.city ?? '',
+        state: r.state ?? '',
+        latitude: r.latitude ?? 0,
+        longitude: r.longitude ?? 0,
+        fsq_place_id: r.fsqPlaceId ?? null,
+        import_batch_id: importBatchId,
+      }));
+      const { data, error } = await supabase.from('want_to_try').insert(rows).select();
+      if (error) throw error;
+      setWantToTry((prev) => [...(data ?? []).map(rowToEntry), ...prev]);
+      return (data ?? []).length;
+    },
+    [user],
+  );
+
   return (
     <DataContext.Provider
       value={{
@@ -584,6 +637,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         wttLoading,
         isBookmarked,
         toggleBookmark,
+        addWantToTryBatch,
         refetchWantToTry,
       }}
     >
@@ -616,6 +670,7 @@ export function useWantToTry() {
     loading: ctx.wttLoading,
     isBookmarked: ctx.isBookmarked,
     toggleBookmark: ctx.toggleBookmark,
+    addBatch: ctx.addWantToTryBatch,
     refetch: ctx.refetchWantToTry,
   };
 }

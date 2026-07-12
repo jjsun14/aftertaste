@@ -367,6 +367,15 @@ export default function ProfileScreen() {
             </View>
           </TouchableOpacity>
           <View style={styles.menuDivider} />
+          <TouchableOpacity
+            style={styles.menuRow}
+            onPress={() => router.push('/import' as any)}
+          >
+            <Ionicons name="download-outline" size={20} color={Colors.textSecondary} />
+            <Text style={styles.menuText}>Import Places</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textMuted} />
+          </TouchableOpacity>
+          <View style={styles.menuDivider} />
           <TouchableOpacity style={styles.menuRow} onPress={openNotifSheet}>
             <Ionicons name="notifications-outline" size={20} color={Colors.textSecondary} />
             <Text style={styles.menuText}>Notifications</Text>
