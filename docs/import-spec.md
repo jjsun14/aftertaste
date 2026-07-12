@@ -120,21 +120,35 @@ status          'pending' | 'needs_attention' | 'dismissed'
 
 UI: **third tab in the Library screen — "To Rate" (working name)** with a
 count badge. Rows show the static-map thumbnail, name, city, any pre-filled
-rating chip. Swipe actions: dismiss, move to Want to Try.
+rating chip. Row actions (swipe/long-press): **"Don't remember it"**
+(→ remove, or convert to Want to Try to re-discover), move to Want to Try,
+dismiss.
 
-Graduation: tap a row → the existing Add Experience flow, with:
-- StepSearch **skipped** (restaurant pre-resolved)
-- StepLog pre-filled: pills pre-selected from `prefill_rating` (same level
-  on taste/vibe/value as a *starting point*), note, date
-- StepCompare as normal, plus **"Don't Remember"** (import-origin only):
-  ends the binary search immediately and inserts at the current mid
-  position — coarse placement within the tier the pills chose. Uses the
-  existing `forceSearchDone` mechanism. Does not count toward
-  MAX_COMPARISONS (it ends the session, nothing follows).
-  After placement, a small toast: "Placed #4 of 7 in Great tier — rerank
-  anytime" (open decision: silent vs toast; recommendation: toast).
+Graduation: tap a row → a **standalone route `/rate-import/[queueId]`**,
+mirroring the existing `/rerank/[id]` pattern (which already shims a
+Memory into a `SearchResult` and reuses StepCompare — proven approach).
+NOT through the Add tab: `add.tsx` resets all state on tab blur, and a
+route keeps the queue flow independent. The route hosts:
+- StepLog with a new optional `initialData?: Partial<LogFormData>` prop
+  (currently StepLog hard-codes its useState defaults — small,
+  backward-compatible change). Pre-fills pills from `prefill_rating`
+  (same level on all three as a starting point), note, date.
+- StepCompare exactly as-is. **No new "Don't Remember" button needed**:
+  the existing UX already covers hazy memories — binary search caps at
+  MAX_COMPARISONS=5 (usually ~3 cards), and the **"Too Close" button
+  already ends the search early** with a tie to the current card.
+- The "truly can't remember at all" case is handled in the To Rate LIST,
+  not the comparison screen (see row actions above): swipe →
+  "Don't remember it" → remove, or move to Want to Try (re-discover it).
+  No memory is ever created with empty/placeholder scores.
 - On successful save: delete the queue row; memory gets
   `source: 'import'` for the badge / future analytics.
+
+**Refactor prerequisite**: the save-with-ranking logic (tied-group
+resolution + `recalculateTierScores` + batch update) is currently
+duplicated between `add.tsx handleFinish` and `rerank/[id].tsx
+handleFinish`. Extract it into a shared helper (e.g. `lib/ranking.ts`)
+BEFORE adding a third copy for import graduation.
 
 ## 6. Photos
 
@@ -168,14 +182,29 @@ not just imports — organic no-photo memories get prettier for free.
   Takeout niceties (filename pre-select, URL fallback).
 - **3**: LLM smart-parse fallback; placement toast polish; share-sheet.
 
-## 9. Open decisions
+## 9. Confirm-screen mechanics (the "checker")
+
+Per-row state machine on the match review screen:
+- `confirmed` — high-confidence match, pre-checked ✓ (uncheck to exclude)
+- `pick` — medium confidence, 2–3 candidate rows shown, user taps one
+- `attention` — no food match; editable search field + "not a restaurant?
+  discard" action
+- `excluded` — user opted the row out
+
+Nothing is written to the database until the user taps **"Import N
+places"**; the review is pure client state (one sitting — abandoning it
+abandons the import, which is fine because re-pasting is cheap and no
+FSQ calls are repeated for confirmed dupes). On import: WTT rows →
+`want_to_try`, been-here rows → `import_queue` (durable from then on).
+Bulk action: "Accept all confident matches".
+
+## 10. Open decisions
 
 1. Tab name: "To Rate" vs "Backlog" vs "From your list".
-2. Don't-Remember placement feedback: silent vs toast (rec: toast).
-3. Batch cap size and FSQ throttle numbers — confirm against actual FSQ
+2. Batch cap size and FSQ throttle numbers — confirm against actual FSQ
    free-tier limits before building phase 1a.
 
-## 10. Edge cases checklist
+## 11. Edge cases checklist
 
 - Duplicate rows within one paste (dedupe before resolving — saves quota)
 - Chains: candidate picker shows addresses; city hint disambiguates
