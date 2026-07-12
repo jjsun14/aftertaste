@@ -61,7 +61,10 @@ async function searchLocations(
     return (json.suggestions ?? []).map((s: any) => ({
       mapbox_id: s.mapbox_id,
       name: s.name,
-      context: s.full_address ?? s.place_formatted ?? s.name,
+      // Always lead with the place's own name — place_formatted alone is
+      // just the surrounding region ("Davie" would render as only
+      // "Florida, United States")
+      context: s.full_address ?? [s.name, s.place_formatted].filter(Boolean).join(', '),
     }));
   } catch {
     return [];
