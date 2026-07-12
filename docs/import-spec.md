@@ -168,6 +168,11 @@ not just imports — organic no-photo memories get prettier for free.
 ## 7. Schema additions
 
 - `import_queue` table (above) + RLS policies.
+- **`import_batch_id` (uuid) on every row an import creates** — queue rows,
+  want_to_try rows, and graduated memories all carry the id of the batch
+  that produced them. Payoff: "Undo this import" is one query per table,
+  and a botched import never requires manual row-hunting. Cheap insurance,
+  impossible to retrofit reliably.
 - `memories.source` text nullable ('import' initially).
 - **`memories.fsq_place_id` text nullable** — start storing it on ALL new
   memories (organic + imported). Payoff: exact dedupe, exact
