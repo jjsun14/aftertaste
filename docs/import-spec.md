@@ -180,7 +180,7 @@ not just imports — organic no-photo memories get prettier for free.
 - **1a (smallest useful)**: paste box → parse → resolve → confirm →
   Want to Try. No queue, no schema change beyond `fsq_place_id`.
 - **1b**: `import_queue` + To Rate tab + pre-filled Add Experience +
-  Don't Remember + static-map placeholder.
+  static-map placeholder.
 - **2**: CSV/xlsx file picker + mapping preview + rating normalization +
   Takeout niceties (filename pre-select, URL fallback).
 - **3**: LLM smart-parse fallback; placement toast polish; share-sheet.
