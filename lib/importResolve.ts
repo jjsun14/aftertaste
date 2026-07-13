@@ -110,33 +110,41 @@ export function classifyCandidates(
   results: SearchResult[],
   bias: Coords | null,
 ): { candidates: SearchResult[]; topScore: number; isChain: boolean } {
+  const distanceKm = (r: SearchResult) =>
+    bias && r.latitude !== undefined && r.longitude !== undefined
+      ? haversineKm(bias, { lat: r.latitude, lng: r.longitude })
+      : Number.POSITIVE_INFINITY;
+
   const scored = results
     .map((r) => {
       const nameScore = matchScore(name, r.name);
-      let penalty = 0;
-      if (bias && r.latitude !== undefined && r.longitude !== undefined) {
-        penalty = Math.min(0.25, haversineKm(bias, { lat: r.latitude, lng: r.longitude }) / 400);
-      }
+      const km = distanceKm(r);
+      const penalty = Number.isFinite(km) ? Math.min(0.25, km / 400) : 0;
       return { r, nameScore, score: nameScore - penalty };
     })
     .filter((x) => x.nameScore >= 0.4)
     .sort((a, b) => b.score - a.score);
 
-  const top = scored[0];
-  if (!top) return { candidates: [], topScore: 0, isChain: false };
+  if (scored.length === 0) return { candidates: [], topScore: 0, isChain: false };
 
-  const topNorm = normalizeName(top.r.name);
-  const sameName = scored.filter((x) => normalizeName(x.r.name) === topNorm);
-  const isChain = sameName.length > 1;
+  // Chain detection counts STRONG matches of any name form — Google names
+  // chain locations inconsistently ("Chipotle" vs "Chipotle Mexican
+  // Grill"), and an exact-name outlier must not beat the store next door.
+  const strong = scored.filter((x) => x.nameScore >= 0.85);
+  const isChain = strong.length > 1;
 
-  // For chains, offer the nearest same-name locations first
+  // Chains: nearest strong match first (distance decides between identical
+  // names, never the name-form quirk); weaker matches trail behind.
   const ordered = isChain
-    ? [...sameName, ...scored.filter((x) => normalizeName(x.r.name) !== topNorm)]
+    ? [
+        ...[...strong].sort((a, b) => distanceKm(a.r) - distanceKm(b.r)),
+        ...scored.filter((x) => x.nameScore < 0.85),
+      ]
     : scored;
 
   return {
     candidates: ordered.slice(0, 3).map((x) => x.r),
-    topScore: top.nameScore,
+    topScore: (strong[0] ?? scored[0]).nameScore,
     isChain,
   };
 }

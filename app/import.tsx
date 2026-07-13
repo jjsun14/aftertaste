@@ -455,9 +455,12 @@ export default function ImportScreen() {
                       Rows with a location are matched THERE; the rest use the
                       batch default from the previous screen. */}
                   {(item.row.city || item.row.coords) && (
-                    <Text style={styles.rowSubLoc} numberOfLines={1}>
-                      📍 {item.row.city ?? 'from your link'}
-                    </Text>
+                    <View style={styles.locLine}>
+                      <Ionicons name="location-outline" size={12} color={Colors.purple} />
+                      <Text style={styles.locLineText} numberOfLines={1}>
+                        {item.row.city ?? 'from your link'}
+                      </Text>
+                    </View>
                   )}
                 </View>
               </TouchableOpacity>
