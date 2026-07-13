@@ -24,7 +24,7 @@ import { uploadPhoto } from '@/lib/uploadPhoto';
 import type { SearchResult, RatingLevel, Memory, Visit } from '@/data/mockData';
 import { determineTier, computeComposite, ratingToScore } from '@/data/mockData';
 import { planTierInsertion } from '@/lib/ranking';
-import { fetchPriceTier } from '@/lib/googlePlaces';
+import { fetchPriceTier, ensureResolved } from '@/lib/googlePlaces';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const SWIPE_BACK_THRESHOLD = SCREEN_WIDTH * 0.25;
@@ -72,16 +72,25 @@ export default function AddExperienceScreen() {
     setSelectedRestaurant(result);
     setStep(2);
     position.value = withTiming(1, TIMING_CONFIG);
-    // Best-effort price prefill — one Enterprise-tier details call per
-    // selection (see lib/googlePlaces cost model). Never blocks the flow.
-    if (!result.priceTier) {
-      fetchPriceTier(result.id).then((priceTier) => {
-        if (!priceTier) return;
-        setSelectedRestaurant((prev) =>
-          prev && prev.id === result.id ? { ...prev, priceTier } : prev,
-        );
-      });
-    }
+    // Best-effort enrichment, never blocks the flow. Autocomplete-fallback
+    // results arrive without coordinates — one details call resolves
+    // coords + address + price together; results that already have coords
+    // just fetch the price (see lib/googlePlaces cost model).
+    (async () => {
+      try {
+        if (result.latitude === undefined || result.longitude === undefined) {
+          const full = await ensureResolved(result);
+          setSelectedRestaurant((prev) => (prev && prev.id === result.id ? full : prev));
+        } else if (!result.priceTier) {
+          const priceTier = await fetchPriceTier(result.id);
+          if (priceTier) {
+            setSelectedRestaurant((prev) =>
+              prev && prev.id === result.id ? { ...prev, priceTier } : prev,
+            );
+          }
+        }
+      } catch { /* enrichment is optional; handleFinish re-checks coords */ }
+    })();
   };
 
   const handleQuickCheckin = async (existingMemory: Memory) => {
@@ -179,6 +188,12 @@ export default function AddExperienceScreen() {
 
     setSaving(true);
     try {
+      // Autocomplete-fallback selections may still lack coordinates if the
+      // background enrichment hasn't landed — resolve before saving.
+      const sel =
+        selectedRestaurant.latitude === undefined || selectedRestaurant.longitude === undefined
+          ? await ensureResolved(selectedRestaurant)
+          : selectedRestaurant;
       // Upload any photos and get back public URLs
       const photoUris = logData.photos ?? [];
       let uploadedPhotoUrls: string[] = [];
@@ -238,26 +253,26 @@ export default function AddExperienceScreen() {
       // Purely numeric segments are dropped first — international addresses
       // often put the street number after a comma ("Calle del Casino, 16"),
       // which otherwise ends up as the "city".
-      const addressParts = selectedRestaurant.address
+      const addressParts = sel.address
         .split(',')
         .map((p) => p.trim())
         .filter((p) => p && !/^\d+$/.test(p));
-      const parsedCity = selectedRestaurant.city ??
+      const parsedCity = sel.city ??
         (addressParts.length >= 3 ? addressParts[addressParts.length - 2] : '');
-      const parsedState = selectedRestaurant.state ??
+      const parsedState = sel.state ??
         (addressParts.length >= 2 ? addressParts[addressParts.length - 1].replace(/\d+/g, '').trim() : '');
 
       // Save new memory with its tier-calculated score
       await addMemory({
-        restaurantName: selectedRestaurant.name,
+        restaurantName: sel.name,
         priceTier: logData.priceTier,
         eateryType: logData.eateryType,
-        cuisineType: selectedRestaurant.category || '',
-        address: selectedRestaurant.address,
+        cuisineType: sel.category || '',
+        address: sel.address,
         city: parsedCity,
         state: parsedState,
-        latitude: selectedRestaurant.latitude ?? 0,
-        longitude: selectedRestaurant.longitude ?? 0,
+        latitude: sel.latitude ?? 0,
+        longitude: sel.longitude ?? 0,
         date: logData.date,
         photos: uploadedPhotoUrls,
         whatIHad: logData.foodItems.split(',').map((s) => s.trim()).filter(Boolean),
@@ -276,7 +291,7 @@ export default function AddExperienceScreen() {
         isFavorite: false,
         visits: [],
         tiedGroupId: newMemoryTiedGroupId,
-        fsqPlaceId: selectedRestaurant.id,
+        fsqPlaceId: sel.id,
       });
 
       // Update other memories in the group with redistributed scores

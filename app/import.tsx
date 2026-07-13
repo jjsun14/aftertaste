@@ -26,7 +26,7 @@ import { Colors } from '@/theme/colors';
 import { useMemories, useWantToTry } from '@/context/DataContext';
 import { parseImportText, type ParsedRow } from '@/lib/importParse';
 import { resolveRows, normalizeName, type ResolvedRow } from '@/lib/importResolve';
-import { searchGooglePlaces } from '@/lib/googlePlaces';
+import { searchGooglePlaces, ensureResolved } from '@/lib/googlePlaces';
 import {
   makeSessionToken,
   searchLocations,
@@ -191,16 +191,23 @@ export default function ImportScreen() {
     setSaving(true);
     try {
       const batchId = Crypto.randomUUID();
+      // Autocomplete-fallback candidates carry no coordinates — resolve
+      // them (one details call each) before writing rows.
+      const places = await Promise.all(
+        included.map((r) =>
+          r.chosen!.latitude === undefined ? ensureResolved(r.chosen!) : Promise.resolve(r.chosen!),
+        ),
+      );
       const count = await addBatch(
-        included.map((r) => ({
-          name: r.chosen!.name,
-          address: r.chosen!.address,
-          city: r.chosen!.city,
-          state: r.chosen!.state,
-          latitude: r.chosen!.latitude,
-          longitude: r.chosen!.longitude,
-          fsqPlaceId: r.chosen!.id,
-          cuisineType: r.chosen!.category,
+        places.map((p) => ({
+          name: p.name,
+          address: p.address,
+          city: p.city,
+          state: p.state,
+          latitude: p.latitude,
+          longitude: p.longitude,
+          fsqPlaceId: p.id,
+          cuisineType: p.category,
         })),
         batchId,
       );

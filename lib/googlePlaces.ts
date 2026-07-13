@@ -138,6 +138,17 @@ export async function searchGooglePlaces(
     // Katz's Deli but a mistyped food place isn't silently hidden).
     const food = places.filter((p) => p.types?.includes('food'));
     const rest = places.filter((p) => !p.types?.includes('food'));
+
+    // Mid-word prefixes ("Quart" → Quarterdeck) don't match in Text
+    // Search — rescue them via the prefix-native Autocomplete endpoint.
+    if (food.length === 0 && query.trim().length >= 3) {
+      const predictions = await autocompleteFood(query, lat, lng);
+      if (predictions.length > 0) {
+        const seen = new Set(predictions.map((p) => p.id));
+        return [...predictions, ...rest.map((p) => toSearchResult(p, bias)).filter((r) => !seen.has(r.id))];
+      }
+    }
+
     return [...food, ...rest].map((p) => toSearchResult(p, bias));
   }
 
@@ -171,6 +182,100 @@ export async function searchGooglePlaces(
   return [];
 }
 
+// Food-ish types as they appear on autocomplete predictions.
+const FOOD_TYPE_HINTS = new Set([
+  'food', 'restaurant', 'bar', 'cafe', 'bakery', 'coffee_shop',
+  'meal_takeaway', 'meal_delivery', 'bar_and_grill', 'sports_bar',
+  'ice_cream_shop', 'dessert_shop', 'tea_house', 'cafeteria', 'diner',
+]);
+
+/**
+ * Prefix fallback: Text Search treats "Quart" as the word *quart*, not a
+ * prefix of "Quarterdeck" — it is not an autocomplete. When a typed query
+ * yields no food results, this asks the actual Autocomplete endpoint,
+ * which is prefix-native. Predictions carry no coordinates; callers must
+ * ensureResolved() before anything needs lat/lng (selection, bookmark).
+ * Billing: Autocomplete is its own Essentials-tier SKU (10K free/month).
+ */
+async function autocompleteFood(
+  query: string,
+  lat: number | null,
+  lng: number | null,
+): Promise<SearchResult[]> {
+  const body: Record<string, unknown> = { input: query };
+  if (lat !== null && lng !== null) {
+    body.locationBias = { circle: { center: { latitude: lat, longitude: lng }, radius: 40000.0 } };
+    body.origin = { latitude: lat, longitude: lng }; // enables distanceMeters
+  }
+  const response = await fetch(`${BASE}/places:autocomplete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Goog-Api-Key': GOOGLE_KEY },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) return [];
+  const json = await response.json();
+  const predictions: any[] = (json.suggestions ?? [])
+    .map((s: any) => s.placePrediction)
+    .filter(Boolean);
+
+  return predictions
+    .filter((p) => (p.types ?? []).some((t: string) => FOOD_TYPE_HINTS.has(t)))
+    // Autocomplete's own order isn't proximity-aware — nearest first
+    .sort((a, b) => (a.distanceMeters ?? Infinity) - (b.distanceMeters ?? Infinity))
+    .map((p): SearchResult => {
+      const meters: number | undefined = p.distanceMeters;
+      return {
+        id: p.placeId,
+        name: p.structuredFormat?.mainText?.text ?? p.text?.text ?? '',
+        address: p.structuredFormat?.secondaryText?.text ?? '',
+        distance:
+          meters === undefined ? '' : meters < 1000 ? `${Math.round(meters)} m` : `${(meters / 1609).toFixed(1)} mi`,
+        category: '',
+        priceTier: undefined,
+        latitude: undefined,  // resolved on selection via ensureResolved()
+        longitude: undefined,
+        isVisited: false,
+        isBookmarked: false,
+      };
+    });
+}
+
+/**
+ * Fill in coordinates/address/category/price for a result that came from
+ * the autocomplete fallback (no-op when coordinates already exist). One
+ * details call covers everything, including priceLevel.
+ */
+export async function ensureResolved(result: SearchResult): Promise<SearchResult> {
+  if (result.latitude !== undefined && result.longitude !== undefined) return result;
+  const fields = 'id,location,formattedAddress,shortFormattedAddress,addressComponents,primaryTypeDisplayName,priceLevel';
+  const response = await fetch(`${BASE}/places/${encodeURIComponent(result.id)}`, {
+    headers: { 'X-Goog-Api-Key': GOOGLE_KEY, 'X-Goog-FieldMask': fields },
+  });
+  if (!response.ok) throw new Error('Could not load place details');
+  const place: GooglePlace & { priceLevel?: string } = await response.json();
+  const mapped = toSearchResult(place, null);
+  return {
+    ...result,
+    address: mapped.address || result.address,
+    city: mapped.city,
+    state: mapped.state,
+    category: mapped.category || result.category,
+    latitude: mapped.latitude,
+    longitude: mapped.longitude,
+    priceTier: priceLevelToTier(place.priceLevel) ?? result.priceTier,
+  };
+}
+
+function priceLevelToTier(level?: string): '$' | '$$' | '$$$' | '$$$$' | undefined {
+  switch (level) {
+    case 'PRICE_LEVEL_INEXPENSIVE': return '$';
+    case 'PRICE_LEVEL_MODERATE': return '$$';
+    case 'PRICE_LEVEL_EXPENSIVE': return '$$$';
+    case 'PRICE_LEVEL_VERY_EXPENSIVE': return '$$$$';
+    default: return undefined;
+  }
+}
+
 /**
  * Fetch the price tier for ONE selected place (Enterprise-tier call —
  * only used when the user actually picks a restaurant to log).
@@ -184,13 +289,7 @@ export async function fetchPriceTier(
     });
     if (!response.ok) return undefined;
     const json = await response.json();
-    switch (json.priceLevel) {
-      case 'PRICE_LEVEL_INEXPENSIVE': return '$';
-      case 'PRICE_LEVEL_MODERATE': return '$$';
-      case 'PRICE_LEVEL_EXPENSIVE': return '$$$';
-      case 'PRICE_LEVEL_VERY_EXPENSIVE': return '$$$$';
-      default: return undefined;
-    }
+    return priceLevelToTier(json.priceLevel);
   } catch {
     return undefined; // price prefill is best-effort, never blocks logging
   }

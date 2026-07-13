@@ -15,7 +15,7 @@ import * as Location from 'expo-location';
 import { Colors } from '@/theme/colors';
 import { type SearchResult, type Memory } from '@/data/mockData';
 import { useMemories, useWantToTry } from '@/context/DataContext';
-import { searchGooglePlaces } from '@/lib/googlePlaces';
+import { searchGooglePlaces, ensureResolved } from '@/lib/googlePlaces';
 import { makeSessionToken, searchLocations, retrieveLocation, type LocationSuggestion } from '@/lib/mapboxLocation';
 
 type SearchTab = 'all' | 'visited';
@@ -294,14 +294,19 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
 
         <View style={styles.resultRight}>
           <TouchableOpacity
-            onPress={(e) => {
+            onPress={async (e) => {
               e.stopPropagation?.();
+              // Autocomplete-fallback rows have no coordinates yet
+              let place = item;
+              if (item.latitude === undefined || item.longitude === undefined) {
+                try { place = await ensureResolved(item); } catch { /* bookmark with what we have */ }
+              }
               toggleBookmark({
-                name: item.name,
-                address: item.address,
-                latitude: item.latitude,
-                longitude: item.longitude,
-                fsqPlaceId: item.id,
+                name: place.name,
+                address: place.address,
+                latitude: place.latitude,
+                longitude: place.longitude,
+                fsqPlaceId: place.id,
               });
             }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
