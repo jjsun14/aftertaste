@@ -19,9 +19,12 @@ export type ResolveStatus =
 export interface ResolvedRow {
   row: ParsedRow;
   status: ResolveStatus;
-  candidates: SearchResult[];      // up to 3
+  candidates: SearchResult[];      // up to 3 (nearest-first for chains)
   chosen: SearchResult | null;     // pre-selected for confirmed, else user taps
   excluded: boolean;               // user opted the row out on the review screen
+  /** Where this row was searched — shown and editable on the review screen */
+  locationLabel: string;
+  bias: Coords | null;
 }
 
 const CONCURRENCY = 4;
@@ -32,6 +35,9 @@ export function normalizeName(s: string): string {
     .toLowerCase()
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
+    // Apostrophes vanish rather than become spaces — users type "wendys"
+    // for "Wendy's"; mapping to "wendy s" broke every chain match.
+    .replace(/['’`]/g, '')
     .replace(/[^\p{L}\p{N} ]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -52,21 +58,36 @@ function matchScore(query: string, candidate: string): number {
   return hits / Math.max(qt.size, 1) * 0.8;
 }
 
-type Coords = { lat: number; lng: number };
+export type Coords = { lat: number; lng: number };
+
+function haversineKm(a: Coords, b: Coords): number {
+  const R = 6371;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLng = toRad(b.lng - a.lng);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
 
 /**
- * Geocode a row's own city hint ("Carbone (NYC)", a City column) so that
- * row is matched THERE instead of at the batch default — lists routinely
- * span many cities. Results are cached per unique city string.
+ * Geocode a location string ("NYC", "33328", "Ellicott City") to coords.
+ * Cached per unique string; proximity makes ambiguous names ("Springfield")
+ * resolve near the batch area instead of wherever ranks globally.
  */
-async function geocodeCity(city: string, cache: Map<string, Coords | null>): Promise<Coords | null> {
+export async function geocodeCity(
+  city: string,
+  cache: Map<string, Coords | null>,
+  proximity?: Coords | null,
+): Promise<Coords | null> {
   const key = city.trim().toLowerCase();
   if (!key) return null;
   if (cache.has(key)) return cache.get(key)!;
   let coords: Coords | null = null;
   try {
     const token = makeSessionToken();
-    const suggestions = await searchLocations(city, token);
+    const suggestions = await searchLocations(city, token, proximity ?? undefined);
     if (suggestions.length > 0) {
       const place = await retrieveLocation(suggestions[0].mapbox_id, token);
       if (place) coords = { lat: place.lat, lng: place.lng };
@@ -76,17 +97,73 @@ async function geocodeCity(city: string, cache: Map<string, Coords | null>): Pro
   return coords;
 }
 
+/**
+ * Score + rank search results for one imported name.
+ * - Name similarity is the base score; distance from the bias point is a
+ *   penalty, so "Culver's 3km away" always beats "Culver's in Kansas".
+ * - Chains (several results normalizing to the same name) are NEVER
+ *   auto-confirmed — the user must pick the location; candidates are the
+ *   nearest ones.
+ */
+export function classifyCandidates(
+  name: string,
+  results: SearchResult[],
+  bias: Coords | null,
+): { candidates: SearchResult[]; topScore: number; isChain: boolean } {
+  const scored = results
+    .map((r) => {
+      const nameScore = matchScore(name, r.name);
+      let penalty = 0;
+      if (bias && r.latitude !== undefined && r.longitude !== undefined) {
+        penalty = Math.min(0.25, haversineKm(bias, { lat: r.latitude, lng: r.longitude }) / 400);
+      }
+      return { r, nameScore, score: nameScore - penalty };
+    })
+    .filter((x) => x.nameScore >= 0.4)
+    .sort((a, b) => b.score - a.score);
+
+  const top = scored[0];
+  if (!top) return { candidates: [], topScore: 0, isChain: false };
+
+  const topNorm = normalizeName(top.r.name);
+  const sameName = scored.filter((x) => normalizeName(x.r.name) === topNorm);
+  const isChain = sameName.length > 1;
+
+  // For chains, offer the nearest same-name locations first
+  const ordered = isChain
+    ? [...sameName, ...scored.filter((x) => normalizeName(x.r.name) !== topNorm)]
+    : scored;
+
+  return {
+    candidates: ordered.slice(0, 3).map((x) => x.r),
+    topScore: top.nameScore,
+    isChain,
+  };
+}
+
 async function resolveOne(
   row: ParsedRow,
   batchBias: Coords | null,
+  batchLabel: string,
   cityCache: Map<string, Coords | null>,
   existingKeys: Set<string>,
   existingFsqIds: Set<string>,
 ): Promise<ResolvedRow> {
   // Location precedence: exact coords from a Maps URL → the row's own
-  // city hint (geocoded) → the batch default.
-  const rowBias = row.coords ?? (row.city ? await geocodeCity(row.city, cityCache) : null);
-  const bias = rowBias ?? batchBias;
+  // city hint (geocoded near the batch area) → the batch default.
+  let bias: Coords | null = null;
+  let locationLabel = batchLabel;
+  if (row.coords) {
+    bias = row.coords;
+    locationLabel = 'from your link';
+  } else if (row.city) {
+    const geocoded = await geocodeCity(row.city, cityCache, batchBias);
+    if (geocoded) {
+      bias = geocoded;
+      locationLabel = row.city;
+    }
+  }
+  if (!bias) bias = batchBias;
 
   let results: SearchResult[] = [];
   try {
@@ -95,30 +172,24 @@ async function resolveOne(
     // network/API failure → let the user retry from the review screen
   }
 
-  const scored = results
-    .map((r) => ({ r, score: matchScore(row.name, r.name) }))
-    .filter((x) => x.score >= 0.4)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
+  const { candidates, topScore, isChain } = classifyCandidates(row.name, results, bias);
+  const base = { row, candidates, excluded: false, locationLabel, bias };
 
-  const candidates = scored.map((x) => x.r);
-  const top = scored[0];
-
-  if (!top) {
-    return { row, status: 'attention', candidates: [], chosen: null, excluded: false };
+  if (candidates.length === 0) {
+    return { ...base, status: 'attention', chosen: null };
   }
 
-  const isDupe =
-    existingFsqIds.has(top.r.id) ||
-    existingKeys.has(normalizeName(top.r.name));
+  const top = candidates[0];
+  const isDupe = existingFsqIds.has(top.id) || existingKeys.has(normalizeName(top.name));
   if (isDupe) {
-    return { row, status: 'duplicate', candidates, chosen: top.r, excluded: true };
+    return { ...base, status: 'duplicate', chosen: top, excluded: true };
   }
 
-  if (top.score >= 0.85) {
-    return { row, status: 'confirmed', candidates, chosen: top.r, excluded: false };
+  // Chains require a human to pick the location — never auto-confirm.
+  if (topScore >= 0.85 && !isChain) {
+    return { ...base, status: 'confirmed', chosen: top };
   }
-  return { row, status: 'pick', candidates, chosen: null, excluded: false };
+  return { ...base, status: 'pick', chosen: null };
 }
 
 /**
@@ -129,7 +200,8 @@ async function resolveOne(
  */
 export async function resolveRows(
   rows: ParsedRow[],
-  bias: { lat: number; lng: number } | null,
+  bias: Coords | null,
+  batchLabel: string,
   existingKeys: Set<string>,
   existingFsqIds: Set<string>,
   onProgress?: (done: number, total: number) => void,
@@ -151,7 +223,7 @@ export async function resolveRows(
   async function worker() {
     while (next < unique.length) {
       const i = next++;
-      out[i] = await resolveOne(unique[i], bias, cityCache, existingKeys, existingFsqIds);
+      out[i] = await resolveOne(unique[i], bias, batchLabel, cityCache, existingKeys, existingFsqIds);
       done++;
       onProgress?.(done, unique.length);
     }

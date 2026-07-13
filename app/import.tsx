@@ -25,7 +25,14 @@ import * as Crypto from 'expo-crypto';
 import { Colors } from '@/theme/colors';
 import { useMemories, useWantToTry } from '@/context/DataContext';
 import { parseImportText, type ParsedRow } from '@/lib/importParse';
-import { resolveRows, normalizeName, type ResolvedRow } from '@/lib/importResolve';
+import {
+  resolveRows,
+  normalizeName,
+  classifyCandidates,
+  geocodeCity,
+  type ResolvedRow,
+  type Coords,
+} from '@/lib/importResolve';
 import { searchGooglePlaces, ensureResolved } from '@/lib/googlePlaces';
 import {
   makeSessionToken,
@@ -57,6 +64,7 @@ export default function ImportScreen() {
   const [biasInput, setBiasInput] = useState('');
   const [biasSuggestions, setBiasSuggestions] = useState<LocationSuggestion[]>([]);
   const sessionTokenRef = useRef(makeSessionToken());
+  const cityCacheRef = useRef(new Map<string, Coords | null>());
 
   // Default the bias to GPS if permission is already granted (no prompt)
   useEffect(() => {
@@ -137,7 +145,7 @@ export default function ImportScreen() {
     setPhase('resolving');
     setProgress({ done: 0, total: rows.length });
     try {
-      const results = await resolveRows(rows, bias, existingKeys, existingFsqIds, (done, total) =>
+      const results = await resolveRows(rows, bias, biasLabel, existingKeys, existingFsqIds, (done, total) =>
         setProgress({ done, total }),
       );
       setResolved(results);
@@ -161,21 +169,44 @@ export default function ImportScreen() {
     );
   };
 
-  const retryRow = async (index: number, newQuery: string) => {
-    const q = newQuery.trim();
-    if (!q) return;
+  // Re-search one row with an edited name and/or an edited location
+  // ("zipcode or a city or anything like regular search").
+  const researchRow = async (
+    index: number,
+    opts: { name?: string; locationText?: string },
+  ) => {
+    const current = resolved[index];
+    const name = (opts.name ?? current.row.name).trim();
+    if (!name) return;
+
+    let rowBias = current.bias ?? bias;
+    let label = current.locationLabel;
+    if (opts.locationText?.trim()) {
+      const coords = await geocodeCity(opts.locationText, cityCacheRef.current, bias);
+      if (!coords) {
+        Alert.alert('Location not found', `Couldn't find "${opts.locationText}". Try a city or zip code.`);
+        return;
+      }
+      rowBias = coords;
+      label = opts.locationText.trim();
+    }
+
     try {
-      const results = await searchGooglePlaces(q, bias?.lat ?? null, bias?.lng ?? null);
+      const results = await searchGooglePlaces(name, rowBias?.lat ?? null, rowBias?.lng ?? null);
+      const { candidates, topScore, isChain } = classifyCandidates(name, results, rowBias);
       setResolved((prev) =>
         prev.map((r, i) => {
           if (i !== index) return r;
-          const candidates = results.slice(0, 3);
+          const confirmed = candidates.length > 0 && topScore >= 0.85 && !isChain;
           return {
             ...r,
-            row: { ...r.row, name: q },
+            row: { ...r.row, name },
             candidates,
-            chosen: candidates.length === 1 ? candidates[0] : null,
-            status: candidates.length > 0 ? 'pick' : 'attention',
+            chosen: confirmed ? candidates[0] : null,
+            status: candidates.length === 0 ? 'attention' : confirmed ? 'confirmed' : 'pick',
+            locationLabel: label,
+            bias: rowBias,
+            excluded: false,
           };
         }),
       );
@@ -221,60 +252,14 @@ export default function ImportScreen() {
   };
 
   // ── Row renderer ──
-  const renderRow = ({ item, index }: { item: ResolvedRow; index: number }) => {
-    if (item.status === 'duplicate') {
-      return (
-        <View style={[styles.rowCard, styles.rowDim]}>
-          <Ionicons name="copy-outline" size={18} color={Colors.textMuted} />
-          <View style={styles.rowInfo}>
-            <Text style={styles.rowName}>{item.chosen?.name ?? item.row.name}</Text>
-            <Text style={styles.rowSub}>Already in your library or list</Text>
-          </View>
-        </View>
-      );
-    }
-
-    if (item.status === 'attention') {
-      return <AttentionRow item={item} onRetry={(q) => retryRow(index, q)} />;
-    }
-
-    if (item.status === 'pick' && !item.chosen) {
-      return (
-        <View style={styles.rowCard}>
-          <Ionicons name="help-circle-outline" size={18} color={Colors.ratingOkay} />
-          <View style={styles.rowInfo}>
-            <Text style={styles.rowName}>{item.row.name}</Text>
-            <Text style={styles.rowSub}>Which one?</Text>
-            {item.candidates.map((c) => (
-              <TouchableOpacity key={c.id} style={styles.candidateRow} onPress={() => chooseCandidate(index, c)}>
-                <Ionicons name="location-outline" size={13} color={Colors.purple} />
-                <Text style={styles.candidateText} numberOfLines={1}>
-                  {c.name} · {c.address}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      );
-    }
-
-    // confirmed, or pick with a chosen candidate
-    return (
-      <TouchableOpacity style={[styles.rowCard, item.excluded && styles.rowDim]} onPress={() => toggleExcluded(index)}>
-        <Ionicons
-          name={item.excluded ? 'ellipse-outline' : 'checkmark-circle'}
-          size={20}
-          color={item.excluded ? Colors.textMuted : Colors.primary}
-        />
-        <View style={styles.rowInfo}>
-          <Text style={styles.rowName}>{item.chosen!.name}</Text>
-          <Text style={styles.rowSub} numberOfLines={1}>
-            {[item.chosen!.category, item.chosen!.address].filter(Boolean).join(' · ')}
-          </Text>
-        </View>
-      </TouchableOpacity>
-    );
-  };
+  const renderRow = ({ item, index }: { item: ResolvedRow; index: number }) => (
+    <ReviewRow
+      item={item}
+      onToggleExcluded={() => toggleExcluded(index)}
+      onChoose={(c) => chooseCandidate(index, c)}
+      onResearch={(opts) => researchRow(index, opts)}
+    />
+  );
 
   // ── Phases ──
   return (
@@ -283,7 +268,17 @@ export default function ImportScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <View style={styles.headerRow}>
-        <Text style={styles.title}>Import Places</Text>
+        <View style={styles.headerLeft}>
+          {(phase === 'preview' || phase === 'review') && (
+            <TouchableOpacity
+              style={[styles.closeBtn, { marginRight: 10 }]}
+              onPress={() => setPhase(phase === 'review' ? 'preview' : 'input')}
+            >
+              <Ionicons name="chevron-back" size={20} color={Colors.textPrimary} />
+            </TouchableOpacity>
+          )}
+          <Text style={styles.title}>Import Places</Text>
+        </View>
         <TouchableOpacity style={styles.closeBtn} onPress={() => router.back()}>
           <Ionicons name="close" size={20} color={Colors.textPrimary} />
         </TouchableOpacity>
@@ -330,7 +325,9 @@ export default function ImportScreen() {
             <TouchableOpacity style={styles.biasPill} onPress={() => setEditingBias(true)}>
               <Ionicons name="location" size={14} color={Colors.purple} />
               <Text style={styles.biasPillText} numberOfLines={1}>
-                Area (optional, for lines without a city): {biasLabel}
+                {biasLabel === 'Anywhere'
+                  ? 'Where are most of these places located?'
+                  : `Most places are near: ${biasLabel}`}
               </Text>
               <Ionicons name="pencil-outline" size={13} color={Colors.textMuted} />
             </TouchableOpacity>
@@ -371,7 +368,9 @@ export default function ImportScreen() {
                   <Text style={[styles.rowName, !item.kept && styles.rowStruck]}>{item.row.name}</Text>
                   {(item.row.note || item.row.city) && (
                     <Text style={styles.rowSub} numberOfLines={1}>
-                      {[item.row.city, item.row.note].filter(Boolean).join(' · ')}
+                      {[item.row.city && `📍 ${item.row.city}`, item.row.note]
+                        .filter(Boolean)
+                        .join('  ·  ')}
                     </Text>
                   )}
                 </View>
@@ -453,27 +452,142 @@ export default function ImportScreen() {
   );
 }
 
-// ── Unmatched row with editable retry ──────────────────────────────
-function AttentionRow({ item, onRetry }: { item: ResolvedRow; onRetry: (q: string) => void }) {
-  const [query, setQuery] = useState(item.row.name);
-  return (
-    <View style={styles.rowCard}>
-      <Ionicons name="alert-circle-outline" size={18} color={Colors.ratingPoor} />
-      <View style={styles.rowInfo}>
-        <Text style={styles.rowSub}>No match found — edit and retry:</Text>
-        <View style={styles.retryRow}>
-          <TextInput
-            style={styles.retryInput}
-            value={query}
-            onChangeText={setQuery}
-            autoCorrect={false}
-            placeholderTextColor={Colors.textMuted}
-          />
-          <TouchableOpacity style={styles.retryBtn} onPress={() => onRetry(query)}>
-            <Ionicons name="search" size={16} color={Colors.primary} />
-          </TouchableOpacity>
+// ── One review row: match + searched-location, both editable ───────
+function ReviewRow({
+  item,
+  onToggleExcluded,
+  onChoose,
+  onResearch,
+}: {
+  item: ResolvedRow;
+  onToggleExcluded: () => void;
+  onChoose: (c: SearchResult) => void;
+  onResearch: (opts: { name?: string; locationText?: string }) => void;
+}) {
+  const [editingLoc, setEditingLoc] = useState(false);
+  const [locInput, setLocInput] = useState('');
+  const [nameInput, setNameInput] = useState(item.row.name);
+
+  const submitLocation = () => {
+    if (!locInput.trim()) return;
+    setEditingLoc(false);
+    onResearch({ locationText: locInput });
+    setLocInput('');
+  };
+
+  // "Searched near X" line, editable on every row type
+  const locationLine = editingLoc ? (
+    <View style={styles.retryRow}>
+      <TextInput
+        style={styles.retryInput}
+        value={locInput}
+        onChangeText={setLocInput}
+        placeholder="City or zip code..."
+        placeholderTextColor={Colors.textMuted}
+        autoCorrect={false}
+        autoFocus
+        onSubmitEditing={submitLocation}
+      />
+      <TouchableOpacity style={styles.retryBtn} onPress={submitLocation}>
+        <Ionicons name="arrow-forward" size={16} color={Colors.purple} />
+      </TouchableOpacity>
+    </View>
+  ) : (
+    <TouchableOpacity style={styles.locLine} onPress={() => setEditingLoc(true)}>
+      <Ionicons name="location-outline" size={12} color={Colors.purple} />
+      <Text style={styles.locLineText} numberOfLines={1}>near {item.locationLabel}</Text>
+      <Ionicons name="pencil-outline" size={11} color={Colors.textMuted} />
+    </TouchableOpacity>
+  );
+
+  // Remove/restore control shown on every row
+  const removeBtn = (
+    <TouchableOpacity onPress={onToggleExcluded} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+      <Ionicons
+        name={item.excluded ? 'add-circle-outline' : 'close'}
+        size={18}
+        color={item.excluded ? Colors.primary : Colors.textMuted}
+      />
+    </TouchableOpacity>
+  );
+
+  if (item.status === 'duplicate') {
+    return (
+      <View style={[styles.rowCard, item.excluded && styles.rowDim]}>
+        <Ionicons name="copy-outline" size={18} color={Colors.textMuted} />
+        <View style={styles.rowInfo}>
+          <Text style={styles.rowName}>{item.chosen?.name ?? item.row.name}</Text>
+          <Text style={styles.rowSub}>Already in your library or list{item.excluded ? '' : ' — importing anyway'}</Text>
         </View>
+        {removeBtn}
       </View>
+    );
+  }
+
+  if (item.status === 'attention') {
+    return (
+      <View style={styles.rowCard}>
+        <Ionicons name="alert-circle-outline" size={18} color={Colors.ratingPoor} />
+        <View style={styles.rowInfo}>
+          <Text style={styles.rowSub}>No match found — edit the name or location:</Text>
+          <View style={styles.retryRow}>
+            <TextInput
+              style={styles.retryInput}
+              value={nameInput}
+              onChangeText={setNameInput}
+              autoCorrect={false}
+              placeholderTextColor={Colors.textMuted}
+            />
+            <TouchableOpacity style={styles.retryBtn} onPress={() => onResearch({ name: nameInput })}>
+              <Ionicons name="search" size={16} color={Colors.primary} />
+            </TouchableOpacity>
+          </View>
+          {locationLine}
+        </View>
+        {removeBtn}
+      </View>
+    );
+  }
+
+  if (item.status === 'pick' && !item.chosen) {
+    return (
+      <View style={styles.rowCard}>
+        <Ionicons name="help-circle-outline" size={18} color={Colors.ratingOkay} />
+        <View style={styles.rowInfo}>
+          <Text style={styles.rowName}>{item.row.name}</Text>
+          <Text style={styles.rowSub}>Which location?</Text>
+          {item.candidates.map((c) => (
+            <TouchableOpacity key={c.id} style={styles.candidateRow} onPress={() => onChoose(c)}>
+              <Ionicons name="location-outline" size={13} color={Colors.purple} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.candidateName}>{c.name}{c.distance ? `  ·  ${c.distance}` : ''}</Text>
+                <Text style={styles.candidateText} numberOfLines={2}>{c.address}</Text>
+              </View>
+            </TouchableOpacity>
+          ))}
+          {locationLine}
+        </View>
+        {removeBtn}
+      </View>
+    );
+  }
+
+  // confirmed, or pick with a chosen candidate
+  return (
+    <View style={[styles.rowCard, item.excluded && styles.rowDim]}>
+      <Ionicons
+        name={item.excluded ? 'ellipse-outline' : 'checkmark-circle'}
+        size={20}
+        color={item.excluded ? Colors.textMuted : Colors.primary}
+      />
+      <View style={styles.rowInfo}>
+        <Text style={styles.rowName}>{item.chosen!.name}</Text>
+        <Text style={styles.rowSub} numberOfLines={2}>
+          {[item.chosen!.category, item.chosen!.address].filter(Boolean).join(' · ')}
+        </Text>
+        {locationLine}
+      </View>
+      {removeBtn}
     </View>
   );
 }
@@ -488,6 +602,16 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: { color: Colors.textPrimary, fontSize: 24, fontWeight: '800' },
+  headerLeft: { flexDirection: 'row', alignItems: 'center' },
+  locLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 6,
+    alignSelf: 'flex-start',
+  },
+  locLineText: { color: Colors.purple, fontSize: 11, fontWeight: '500', maxWidth: 220 },
+  candidateName: { color: Colors.textPrimary, fontSize: 13, fontWeight: '600' },
   closeBtn: {
     width: 36, height: 36, borderRadius: 18,
     backgroundColor: Colors.surfaceLight,

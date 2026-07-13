@@ -79,6 +79,9 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
   // bookmark or adding a memory never re-runs the network search.
   useEffect(() => {
     if (!query.trim() && !userLocation) {
+      // Invalidate any in-flight search so a slow response can't
+      // repopulate the list after this clear
+      searchIdRef.current++;
       setResults([]);
       setSearchError(null);
       return;
