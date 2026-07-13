@@ -23,7 +23,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import { Colors } from '@/theme/colors';
-import { useMemories, useWantToTry } from '@/context/DataContext';
+import { useMemories, useWantToTry, useImportQueue } from '@/context/DataContext';
 import { parseImportText, looksTabular, type ParsedRow } from '@/lib/importParse';
 import { supabase } from '@/lib/supabase';
 import {
@@ -49,6 +49,7 @@ export default function ImportScreen() {
   const insets = useSafeAreaInsets();
   const { memories } = useMemories();
   const { entries: wantToTry, addBatch } = useWantToTry();
+  const { addBatch: addQueueBatch } = useImportQueue();
 
   const [phase, setPhase] = useState<Phase>('input');
   const [text, setText] = useState('');
@@ -57,6 +58,9 @@ export default function ImportScreen() {
   const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [saving, setSaving] = useState(false);
   const [addedCount, setAddedCount] = useState(0);
+  // Where confirmed places land: pasted journals are usually places
+  // you've BEEN (→ To Rate queue); Google "want to go" exports → WTT.
+  const [destination, setDestination] = useState<'been' | 'wantToTry'>('been');
 
   // ── Batch location bias ──
   const [bias, setBias] = useState<{ lat: number; lng: number } | null>(null);
@@ -300,19 +304,38 @@ export default function ImportScreen() {
           r.chosen!.latitude === undefined ? ensureResolved(r.chosen!) : Promise.resolve(r.chosen!),
         ),
       );
-      const count = await addBatch(
-        places.map((p) => ({
-          name: p.name,
-          address: p.address,
-          city: p.city,
-          state: p.state,
-          latitude: p.latitude,
-          longitude: p.longitude,
-          placeId: p.id,
-          cuisineType: p.category,
-        })),
-        batchId,
-      );
+      let count: number;
+      if (destination === 'been') {
+        count = await addQueueBatch(
+          included.map((r, i) => ({
+            name: places[i].name,
+            address: places[i].address,
+            city: places[i].city,
+            state: places[i].state,
+            latitude: places[i].latitude,
+            longitude: places[i].longitude,
+            placeId: places[i].id,
+            category: places[i].category,
+            prefillRating: r.row.rating ?? null,
+            prefillNote: r.row.note ?? null,
+          })),
+          batchId,
+        );
+      } else {
+        count = await addBatch(
+          places.map((p) => ({
+            name: p.name,
+            address: p.address,
+            city: p.city,
+            state: p.state,
+            latitude: p.latitude,
+            longitude: p.longitude,
+            placeId: p.id,
+            cuisineType: p.category,
+          })),
+          batchId,
+        );
+      }
       setAddedCount(count);
       setPhase('done');
     } catch (err: any) {
@@ -505,6 +528,27 @@ export default function ImportScreen() {
             contentContainerStyle={{ paddingBottom: 12 }}
             keyboardShouldPersistTaps="handled"
           />
+          {/* Destination: pasted journals are usually places you've been */}
+          <View style={styles.destRow}>
+            <Text style={styles.destLabel}>These are places I&apos;ve…</Text>
+            <View style={styles.destChips}>
+              {([
+                ['been', 'Been to'],
+                ['wantToTry', 'Want to try'],
+              ] as const).map(([key, label]) => (
+                <TouchableOpacity
+                  key={key}
+                  style={[styles.destChip, destination === key && styles.destChipActive]}
+                  onPress={() => setDestination(key)}
+                >
+                  <Text style={[styles.destChipText, destination === key && styles.destChipTextActive]}>
+                    {label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+
           <TouchableOpacity
             style={[styles.primaryBtn, (included.length === 0 || saving) && styles.primaryBtnDisabled, { marginBottom: insets.bottom + 8 }]}
             disabled={included.length === 0 || saving}
@@ -514,7 +558,9 @@ export default function ImportScreen() {
               <ActivityIndicator color="#000" />
             ) : (
               <Text style={styles.primaryBtnText}>
-                Add {included.length} to Want to Try
+                {destination === 'been'
+                  ? `Add ${included.length} to my To Rate list`
+                  : `Add ${included.length} to Want to Try`}
               </Text>
             )}
           </TouchableOpacity>
@@ -525,12 +571,18 @@ export default function ImportScreen() {
         <View style={styles.centerWrap}>
           <Ionicons name="checkmark-circle" size={52} color={Colors.primary} />
           <Text style={styles.doneTitle}>{addedCount} places added!</Text>
-          <Text style={styles.hint}>Waiting in your Want to Try list.</Text>
+          <Text style={styles.hint}>
+            {destination === 'been'
+              ? 'Waiting in your To Rate list — rate them whenever you feel like it.'
+              : 'Waiting in your Want to Try list.'}
+          </Text>
           <TouchableOpacity
             style={styles.primaryBtn}
             onPress={() => {
               router.back();
-              router.navigate('/(tabs)/library' as any);
+              router.navigate(
+                { pathname: '/(tabs)/library', params: { showTab: destination === 'been' ? 'toRate' : 'wantToTry' } } as any,
+              );
             }}
           >
             <Text style={styles.primaryBtnText}>See the list</Text>
@@ -768,6 +820,26 @@ const styles = StyleSheet.create({
   primaryBtnDisabled: { opacity: 0.4 },
   primaryBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
   btnRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  destRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    marginBottom: 4,
+  },
+  destLabel: { color: Colors.textSecondary, fontSize: 13 },
+  destChips: { flexDirection: 'row', gap: 8 },
+  destChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorder,
+    backgroundColor: Colors.surface,
+  },
+  destChipActive: { borderColor: Colors.primary, backgroundColor: Colors.primaryBg },
+  destChipText: { color: Colors.textSecondary, fontSize: 13, fontWeight: '500' },
+  destChipTextActive: { color: Colors.primary, fontWeight: '600' },
   centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, paddingHorizontal: 32 },
   resolvingText: { color: Colors.textSecondary, fontSize: 14 },
   progressTrack: {

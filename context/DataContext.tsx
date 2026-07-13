@@ -9,7 +9,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
-import type { Memory, Visit, WantToTryEntry, RatingLevel, EateryType } from '@/data/mockData';
+import type { Memory, Visit, WantToTryEntry, ImportQueueItem, RatingLevel, EateryType } from '@/data/mockData';
 import { computeComposite, ratingToScore, determineTier, recalculateTierScores } from '@/data/mockData';
 
 // ─── Row mappers ──────────────────────────────────────────────────
@@ -45,6 +45,8 @@ function rowToMemory(row: any): Memory {
     photoDates: row.photo_dates ?? {},
     tiedGroupId: row.tied_group_id ?? null,
     placeId: row.place_id ?? null,
+    source: row.source ?? null,
+    importBatchId: row.import_batch_id ?? null,
   };
 }
 
@@ -80,6 +82,8 @@ function memoryToRow(memory: Omit<Memory, 'id'>, userId: string) {
     photo_dates: memory.photoDates ?? {},
     tied_group_id: memory.tiedGroupId ?? null,
     place_id: memory.placeId ?? null,
+    source: memory.source ?? null,
+    import_batch_id: memory.importBatchId ?? null,
   };
 }
 
@@ -96,6 +100,23 @@ function rowToEntry(row: any): WantToTryEntry {
     latitude: row.latitude,
     longitude: row.longitude,
     placeId: row.place_id ?? null,
+  };
+}
+
+function rowToQueueItem(row: any): ImportQueueItem {
+  return {
+    id: row.id,
+    name: row.name,
+    address: row.address ?? '',
+    city: row.city ?? '',
+    state: row.state ?? '',
+    latitude: row.latitude ?? 0,
+    longitude: row.longitude ?? 0,
+    placeId: row.place_id ?? null,
+    category: row.category ?? '',
+    prefillRating: row.prefill_rating ?? null,
+    prefillNote: row.prefill_note ?? null,
+    importBatchId: row.import_batch_id ?? null,
   };
 }
 
@@ -142,7 +163,29 @@ interface WantToTryContext {
   refetchWantToTry: () => Promise<void>;
 }
 
-type DataContextType = MemoriesContext & WantToTryContext;
+interface ImportQueueContext {
+  importQueue: ImportQueueItem[];
+  queueLoading: boolean;
+  addImportQueueBatch: (
+    rows: {
+      name: string;
+      address?: string;
+      city?: string;
+      state?: string;
+      latitude?: number;
+      longitude?: number;
+      placeId?: string | null;
+      category?: string;
+      prefillRating?: number | null;
+      prefillNote?: string | null;
+    }[],
+    importBatchId: string,
+  ) => Promise<number>;
+  removeQueueItem: (id: string) => Promise<void>;
+  refetchImportQueue: () => Promise<void>;
+}
+
+type DataContextType = MemoriesContext & WantToTryContext & ImportQueueContext;
 
 const DataContext = createContext<DataContextType>({} as DataContextType);
 
@@ -620,6 +663,82 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     [user],
   );
 
+  // ── Import queue ("been here" imports waiting to be rated) ──
+  const [importQueue, setImportQueue] = useState<ImportQueueItem[]>([]);
+  const [queueLoading, setQueueLoading] = useState(true);
+
+  const refetchImportQueue = useCallback(async () => {
+    if (!user) return;
+    setQueueLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('import_queue')
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      setImportQueue((data ?? []).map(rowToQueueItem));
+    } catch (err) {
+      console.warn('Failed to fetch import queue:', err);
+    } finally {
+      setQueueLoading(false);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    if (user) {
+      refetchImportQueue();
+    } else {
+      setImportQueue([]);
+      setQueueLoading(false);
+    }
+  }, [refetchImportQueue, user]);
+
+  const addImportQueueBatch = useCallback(
+    async (
+      rows: {
+        name: string;
+        address?: string;
+        city?: string;
+        state?: string;
+        latitude?: number;
+        longitude?: number;
+        placeId?: string | null;
+        category?: string;
+        prefillRating?: number | null;
+        prefillNote?: string | null;
+      }[],
+      importBatchId: string,
+    ): Promise<number> => {
+      if (!user || rows.length === 0) return 0;
+      const inserts = rows.map((r) => ({
+        user_id: user.id,
+        source: 'import',
+        name: r.name,
+        address: r.address ?? '',
+        city: r.city ?? '',
+        state: r.state ?? '',
+        latitude: r.latitude ?? 0,
+        longitude: r.longitude ?? 0,
+        place_id: r.placeId ?? null,
+        category: r.category ?? '',
+        prefill_rating: r.prefillRating ?? null,
+        prefill_note: r.prefillNote ?? null,
+        import_batch_id: importBatchId,
+      }));
+      const { data, error } = await supabase.from('import_queue').insert(inserts).select();
+      if (error) throw error;
+      setImportQueue((prev) => [...(data ?? []).map(rowToQueueItem), ...prev]);
+      return (data ?? []).length;
+    },
+    [user],
+  );
+
+  const removeQueueItem = useCallback(async (id: string) => {
+    const { error } = await supabase.from('import_queue').delete().eq('id', id);
+    if (error) throw error;
+    setImportQueue((prev) => prev.filter((q) => q.id !== id));
+  }, []);
+
   return (
     <DataContext.Provider
       value={{
@@ -639,6 +758,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         toggleBookmark,
         addWantToTryBatch,
         refetchWantToTry,
+        importQueue,
+        queueLoading,
+        addImportQueueBatch,
+        removeQueueItem,
+        refetchImportQueue,
       }}
     >
       {children}
@@ -672,5 +796,16 @@ export function useWantToTry() {
     toggleBookmark: ctx.toggleBookmark,
     addBatch: ctx.addWantToTryBatch,
     refetch: ctx.refetchWantToTry,
+  };
+}
+
+export function useImportQueue() {
+  const ctx = useContext(DataContext);
+  return {
+    queue: ctx.importQueue,
+    loading: ctx.queueLoading,
+    addBatch: ctx.addImportQueueBatch,
+    remove: ctx.removeQueueItem,
+    refetch: ctx.refetchImportQueue,
   };
 }

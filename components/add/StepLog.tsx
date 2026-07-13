@@ -63,9 +63,16 @@ interface StepLogProps {
   restaurant: SearchResult;
   onNext: () => void;
   onDataChange: (data: LogFormData) => void;
+  /** Prefill for import graduation — starting values only, user edits win. */
+  initialData?: {
+    note?: string;
+    taste?: RatingLevel;
+    vibe?: RatingLevel;
+    value?: RatingLevel;
+  };
 }
 
-export default function StepLog({ restaurant, onNext, onDataChange }: StepLogProps) {
+export default function StepLog({ restaurant, onNext, onDataChange, initialData }: StepLogProps) {
   const [visitDate, setVisitDate] = useState(new Date());
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [foodItems, setFoodItems] = useState('');
@@ -73,11 +80,11 @@ export default function StepLog({ restaurant, onNext, onDataChange }: StepLogPro
   const [eateryType, setEateryType] = useState<EateryType>('Restaurant');
   const [priceTier, setPriceTier] = useState<PriceTier>(restaurant.priceTier ?? '$$');
   const [priceTouched, setPriceTouched] = useState(false);
-  const [taste, setTaste] = useState<RatingLevel>('Great');
-  const [vibe, setVibe] = useState<RatingLevel>('Okay');
-  const [value, setValue] = useState<RatingLevel>('Okay');
+  const [taste, setTaste] = useState<RatingLevel>(initialData?.taste ?? 'Great');
+  const [vibe, setVibe] = useState<RatingLevel>(initialData?.vibe ?? 'Okay');
+  const [value, setValue] = useState<RatingLevel>(initialData?.value ?? 'Okay');
   const [eatAgain, setEatAgain] = useState(true);
-  const [note, setNote] = useState('');
+  const [note, setNote] = useState(initialData?.note ?? '');
   const [squadNames, setSquadNames] = useState('');
   const [squadFriends, setSquadFriends] = useState<SquadFriend[]>([]);
   const [showNote, setShowNote] = useState(false);

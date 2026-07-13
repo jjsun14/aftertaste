@@ -92,6 +92,31 @@ export interface Memory {
   photoDates?: Record<string, string>;  // photo URL → ISO date for carousel date labels
   tiedGroupId?: string | null;  // memories sharing this id always get the same compositeScore
   placeId?: string | null;   // exact place id — Google Places (dedupe, chain detection)
+  source?: string | null;         // 'import' when graduated from the To Rate queue
+  importBatchId?: string | null;  // one-query undo of a whole import
+}
+
+/** A "been here" import waiting to be rated (Library → To Rate tab). */
+export interface ImportQueueItem {
+  id: string;
+  name: string;
+  address: string;
+  city: string;
+  state: string;
+  latitude: number;
+  longitude: number;
+  placeId: string | null;
+  category: string;
+  prefillRating: number | null;  // 0-10 from the imported data, if one was found
+  prefillNote: string | null;
+  importBatchId: string | null;
+}
+
+/** Map an imported 0-10 rating onto the app's coarse levels (anchor-aligned). */
+export function importRatingToLevel(rating: number): RatingLevel {
+  if (rating >= 8.5) return 'Great';
+  if (rating >= 5.5) return 'Okay';
+  return 'Poor';
 }
 
 export interface WantToTryEntry {

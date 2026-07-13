@@ -15,13 +15,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Colors } from '@/theme/colors';
-import { useMemories, useWantToTry } from '@/context/DataContext';
+import { useMemories, useWantToTry, useImportQueue } from '@/context/DataContext';
 import MemoryGrid from '@/components/library/MemoryGrid';
 import type { GroupedMemory } from '@/components/library/MemoryGrid';
 import WantToTryList from '@/components/library/WantToTryList';
+import ToRateList from '@/components/library/ToRateList';
 import type { EateryType } from '@/data/mockData';
 
-type LibraryTab = 'all' | 'wantToTry';
+type LibraryTab = 'all' | 'wantToTry' | 'toRate';
 type SortOption = 'newest' | 'score_high' | 'score_low' | 'oldest';
 
 const EATERY_TYPES: EateryType[] = ['Restaurant', 'Fast Casual', 'Cafe', 'Bakery', 'Bar', 'Fine Dining', 'Dessert'];
@@ -40,6 +41,7 @@ export default function LibraryScreen() {
   // When navigated to with showTab=all (e.g. after adding a memory), reset to All Entries
   useEffect(() => {
     if (showTab === 'all') setActiveTab('all');
+    if (showTab === 'toRate') setActiveTab('toRate');
   }, [showTab]);
 
   // Drag-to-dismiss for filter sheet
@@ -69,6 +71,7 @@ export default function LibraryScreen() {
 
   const { memories, loading: memoriesLoading } = useMemories();
   const { entries: wantToTryEntries, loading: wttLoading } = useWantToTry();
+  const { queue: importQueue, loading: queueLoading } = useImportQueue();
 
   // Derive unique cities from real memories
   const cities = useMemo(() => {
@@ -204,10 +207,12 @@ export default function LibraryScreen() {
 
       {/* Tabs */}
       <View style={styles.tabRow}>
-        {(['all', 'wantToTry'] as LibraryTab[]).map((key) => (
+        {((importQueue.length > 0
+          ? ['all', 'wantToTry', 'toRate']
+          : ['all', 'wantToTry']) as LibraryTab[]).map((key) => (
           <TouchableOpacity key={key} style={styles.tab} onPress={() => setActiveTab(key)}>
             <Text style={[styles.tabText, activeTab === key && styles.tabTextActive]}>
-              {key === 'all' ? 'All Entries' : 'Want to Try'}
+              {key === 'all' ? 'All Entries' : key === 'wantToTry' ? 'Want to Try' : `To Rate (${importQueue.length})`}
             </Text>
             {activeTab === key && <View style={styles.underline} />}
           </TouchableOpacity>
@@ -278,6 +283,14 @@ export default function LibraryScreen() {
         ) : (
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
             <MemoryGrid groups={filteredGroups} />
+          </ScrollView>
+        )
+      ) : activeTab === 'toRate' ? (
+        queueLoading ? (
+          <View style={styles.centeredWrap}><ActivityIndicator color={Colors.primary} /></View>
+        ) : (
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
+            <ToRateList items={importQueue} />
           </ScrollView>
         )
       ) : wttLoading ? (
