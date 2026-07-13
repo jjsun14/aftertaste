@@ -404,11 +404,15 @@ export default function ImportScreen() {
                 />
                 <View style={styles.rowInfo}>
                   <Text style={[styles.rowName, !item.kept && styles.rowStruck]}>{item.row.name}</Text>
-                  {(item.row.note || item.row.city) && (
+                  {(item.row.note || item.row.city || item.row.coords) && (
                     <Text style={styles.rowSub} numberOfLines={1}>
-                      {[item.row.city && `📍 ${item.row.city}`, item.row.note && `“${item.row.note}”`]
-                        .filter(Boolean)
-                        .join('  ·  ')}
+                      {(item.row.city || item.row.coords) && (
+                        <Text style={styles.rowSubLoc}>
+                          📍 {item.row.city ?? 'from your link'}
+                        </Text>
+                      )}
+                      {(item.row.city || item.row.coords) && item.row.note ? '  ·  ' : ''}
+                      {item.row.note ? `“${item.row.note}”` : ''}
                     </Text>
                   )}
                 </View>
@@ -740,6 +744,7 @@ const styles = StyleSheet.create({
   rowName: { color: Colors.textPrimary, fontSize: 14, fontWeight: '600', marginBottom: 2 },
   rowStruck: { textDecorationLine: 'line-through', color: Colors.textMuted },
   rowSub: { color: Colors.textSecondary, fontSize: 12 },
+  rowSubLoc: { color: Colors.purple, fontSize: 12, fontWeight: '500' },
   candidateRow: {
     flexDirection: 'row',
     alignItems: 'center',
