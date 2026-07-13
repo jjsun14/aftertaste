@@ -6,7 +6,7 @@ import {
   TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
-import { Image } from 'expo-image';
+import SignedImage from '@/components/shared/SignedImage';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -457,8 +457,8 @@ export default function MapScreen() {
           }}
         >
           {selectedMemory.photos[0] ? (
-            <Image
-              source={{ uri: selectedMemory.photos[0] }}
+            <SignedImage
+              uri={selectedMemory.photos[0]}
               style={styles.cardImage}
               contentFit="cover"
             />

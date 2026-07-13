@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Dimensions, Pressable } from 'react-native';
-import { Image } from 'expo-image';
+import SignedImage from '@/components/shared/SignedImage';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -35,8 +35,8 @@ export default function MemoryCard({ memory, visitCount, overrideScore }: Memory
       onPress={() => router.push(`/entry/${memory.id}` as any)}
     >
       {hasPhoto ? (
-        <Image
-          source={{ uri: memory.photos[0] }}
+        <SignedImage
+          uri={memory.photos[0]}
           style={styles.image}
           contentFit="cover"
         />

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, ScrollView } from 'react-native';
-import { Image } from 'expo-image';
+import SignedImage from '@/components/shared/SignedImage';
 import { Colors } from '@/theme/colors';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -37,8 +37,8 @@ export default function PhotoCarousel({ photos, height = 350, photoDates }: Phot
       >
         {photos.map((uri, i) => (
           <View key={i} style={{ width: SCREEN_WIDTH, height }}>
-            <Image
-              source={{ uri }}
+            <SignedImage
+              uri={uri}
               style={[styles.image, { height }]}
               contentFit="cover"
             />
