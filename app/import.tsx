@@ -406,7 +406,7 @@ export default function ImportScreen() {
                   <Text style={[styles.rowName, !item.kept && styles.rowStruck]}>{item.row.name}</Text>
                   {(item.row.note || item.row.city) && (
                     <Text style={styles.rowSub} numberOfLines={1}>
-                      {[item.row.city && `📍 ${item.row.city}`, item.row.note]
+                      {[item.row.city && `📍 ${item.row.city}`, item.row.note && `“${item.row.note}”`]
                         .filter(Boolean)
                         .join('  ·  ')}
                     </Text>

@@ -113,15 +113,14 @@ function parseFreeformLine(line: string): ParsedRow | null {
   const { rest, rating } = extractRating(s);
   s = rest.trim();
 
-  // Trailing parenthetical is tried as a location hint ("Katz's (LES)") —
-  // but it may be anything ("chick fil a (fries)"), so it's also kept as
-  // note text; a failed geocode just falls back to the batch area.
+  // Trailing parenthetical is tried as a location hint ("Katz's (LES)").
+  // It may be anything ("chick fil a (fries)") — a failed geocode simply
+  // falls back to the batch area, and the review screen shows what was
+  // used, editable per row.
   let city: string | undefined;
-  let parenNote: string | undefined;
   const paren = s.match(/\(([^)]{2,30})\)\s*$/);
   if (paren) {
     city = paren[1].trim();
-    parenNote = paren[1].trim();
     s = s.slice(0, paren.index).trim();
   }
 
@@ -139,8 +138,7 @@ function parseFreeformLine(line: string): ParsedRow | null {
 
   name = name.replace(/[\s,;]+$/, '').trim();
   if (!name) return null;
-  const fullNote = [note, parenNote].filter(Boolean).join(' · ') || undefined;
-  return { raw, name, city, note: fullNote, rating };
+  return { raw, name, city, note, rating };
 }
 
 // ── Tabular (tab-separated or simple CSV with a header row) ────────
