@@ -24,7 +24,8 @@ import * as Location from 'expo-location';
 import * as Crypto from 'expo-crypto';
 import { Colors } from '@/theme/colors';
 import { useMemories, useWantToTry } from '@/context/DataContext';
-import { parseImportText, type ParsedRow } from '@/lib/importParse';
+import { parseImportText, looksTabular, type ParsedRow } from '@/lib/importParse';
+import { supabase } from '@/lib/supabase';
 import {
   resolveRows,
   normalizeName,
@@ -106,10 +107,49 @@ export default function ImportScreen() {
     }
   };
 
-  // ── Parse → preview (no network yet) ──
-  const handleFindPlaces = () => {
+  // ── Parse → preview ──
+  // Freeform pastes go through the smart parser (Claude via the
+  // smart-parse edge function — understands typos, mixed formats, and
+  // which words are locations). Structured pastes (spreadsheet tabs,
+  // header CSVs) parse exactly with the local parser, and any smart-parse
+  // failure falls back to the local parser too — this step can't dead-end.
+  const [parsing, setParsing] = useState(false);
+
+  const handleFindPlaces = async () => {
     Keyboard.dismiss();
-    const rows = parseImportText(text);
+    if (!text.trim() || parsing) return;
+    setParsing(true);
+
+    let rows: ParsedRow[] | null = null;
+    try {
+      if (!looksTabular(text)) {
+        const timeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('smart-parse timeout')), 25000),
+        );
+        const { data, error } = (await Promise.race([
+          supabase.functions.invoke('smart-parse', { body: { text } }),
+          timeout,
+        ])) as { data: any; error: any };
+        if (!error && Array.isArray(data?.places) && data.places.length > 0) {
+          rows = data.places
+            .filter((p: any) => typeof p?.name === 'string' && p.name.trim())
+            .map(
+              (p: any): ParsedRow => ({
+                raw: p.name,
+                name: p.name.trim(),
+                city: p.city ?? undefined,
+                note: p.note ?? undefined,
+                rating: typeof p.rating === 'number' ? p.rating : undefined,
+              }),
+            );
+        }
+      }
+    } catch {
+      // fall through to the local parser
+    }
+    if (!rows || rows.length === 0) rows = parseImportText(text);
+    setParsing(false);
+
     if (rows.length === 0) {
       Alert.alert('Nothing to import', 'Paste a list with one place per line, or spreadsheet cells.');
       return;
@@ -372,11 +412,18 @@ export default function ImportScreen() {
           )}
 
           <TouchableOpacity
-            style={[styles.primaryBtn, !text.trim() && styles.primaryBtnDisabled]}
-            disabled={!text.trim()}
+            style={[styles.primaryBtn, (!text.trim() || parsing) && styles.primaryBtnDisabled]}
+            disabled={!text.trim() || parsing}
             onPress={handleFindPlaces}
           >
-            <Text style={styles.primaryBtnText}>Find my places</Text>
+            {parsing ? (
+              <View style={styles.btnRow}>
+                <ActivityIndicator color="#000" size="small" />
+                <Text style={styles.primaryBtnText}>Reading your list…</Text>
+              </View>
+            ) : (
+              <Text style={styles.primaryBtnText}>Find my places</Text>
+            )}
           </TouchableOpacity>
         </View>
       )}
@@ -720,6 +767,7 @@ const styles = StyleSheet.create({
   },
   primaryBtnDisabled: { opacity: 0.4 },
   primaryBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
+  btnRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 14, paddingHorizontal: 32 },
   resolvingText: { color: Colors.textSecondary, fontSize: 14 },
   progressTrack: {

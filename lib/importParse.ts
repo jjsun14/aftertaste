@@ -217,6 +217,25 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
   return rows.length > 0 ? rows : null;
 }
 
+/**
+ * True when the pasted text is structured (spreadsheet tabs or a header
+ * CSV) — those parse exactly with the deterministic path, so the smart
+ * parse (LLM) should be skipped.
+ */
+export function looksTabular(text: string): boolean {
+  const lines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return false;
+  const tabbed = lines.filter((l) => l.includes('\t')).length;
+  if (tabbed >= lines.length / 2) return true;
+  if (lines.length >= 2 && lines[0].includes(',')) {
+    return splitCsvLine(lines[0]).map(classifyHeader).filter(Boolean).length >= 1;
+  }
+  return false;
+}
+
 // ── Entry point ────────────────────────────────────────────────────
 export function parseImportText(text: string): ParsedRow[] {
   const lines = text
