@@ -451,15 +451,12 @@ export default function ImportScreen() {
                 />
                 <View style={styles.rowInfo}>
                   <Text style={[styles.rowName, !item.kept && styles.rowStruck]}>{item.row.name}</Text>
-                  {(item.row.note || item.row.city || item.row.coords) && (
-                    <Text style={styles.rowSub} numberOfLines={1}>
-                      {(item.row.city || item.row.coords) && (
-                        <Text style={styles.rowSubLoc}>
-                          📍 {item.row.city ?? 'from your link'}
-                        </Text>
-                      )}
-                      {(item.row.city || item.row.coords) && item.row.note ? '  ·  ' : ''}
-                      {item.row.note ? `“${item.row.note}”` : ''}
+                  {/* Second line: recognized location only (purple), else nothing.
+                      Rows with a location are matched THERE; the rest use the
+                      batch default from the previous screen. */}
+                  {(item.row.city || item.row.coords) && (
+                    <Text style={styles.rowSubLoc} numberOfLines={1}>
+                      📍 {item.row.city ?? 'from your link'}
                     </Text>
                   )}
                 </View>
