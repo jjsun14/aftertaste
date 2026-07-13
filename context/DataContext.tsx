@@ -44,7 +44,7 @@ function rowToMemory(row: any): Memory {
     visits: (row.visits ?? []) as Visit[],
     photoDates: row.photo_dates ?? {},
     tiedGroupId: row.tied_group_id ?? null,
-    fsqPlaceId: row.fsq_place_id ?? null,
+    placeId: row.place_id ?? null,
   };
 }
 
@@ -79,7 +79,7 @@ function memoryToRow(memory: Omit<Memory, 'id'>, userId: string) {
     visits: memory.visits ?? [],
     photo_dates: memory.photoDates ?? {},
     tied_group_id: memory.tiedGroupId ?? null,
-    fsq_place_id: memory.fsqPlaceId ?? null,
+    place_id: memory.placeId ?? null,
   };
 }
 
@@ -95,7 +95,7 @@ function rowToEntry(row: any): WantToTryEntry {
     state: row.state,
     latitude: row.latitude,
     longitude: row.longitude,
-    fsqPlaceId: row.fsq_place_id ?? null,
+    placeId: row.place_id ?? null,
   };
 }
 
@@ -124,7 +124,7 @@ interface WantToTryContext {
     state?: string;
     latitude?: number;
     longitude?: number;
-    fsqPlaceId?: string;
+    placeId?: string;
   }) => Promise<void>;
   addWantToTryBatch: (
     restaurants: {
@@ -134,7 +134,7 @@ interface WantToTryContext {
       state?: string;
       latitude?: number;
       longitude?: number;
-      fsqPlaceId?: string;
+      placeId?: string;
       cuisineType?: string;
     }[],
     importBatchId: string,
@@ -515,7 +515,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       state?: string;
       latitude?: number;
       longitude?: number;
-      fsqPlaceId?: string;
+      placeId?: string;
     }) => {
       if (!user) return;
       const existing = wantToTry.find(
@@ -544,7 +544,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
           state: restaurant.state ?? '',
           latitude: restaurant.latitude ?? 0,
           longitude: restaurant.longitude ?? 0,
-          fsqPlaceId: restaurant.fsqPlaceId ?? null,
+          placeId: restaurant.placeId ?? null,
         };
         setWantToTry((prev) => [optimisticEntry, ...prev]);
         supabase
@@ -560,7 +560,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
             state: restaurant.state ?? '',
             latitude: restaurant.latitude ?? 0,
             longitude: restaurant.longitude ?? 0,
-            fsq_place_id: restaurant.fsqPlaceId ?? null,
+            place_id: restaurant.placeId ?? null,
           })
           .select()
           .single()
@@ -592,7 +592,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         state?: string;
         latitude?: number;
         longitude?: number;
-        fsqPlaceId?: string;
+        placeId?: string;
         cuisineType?: string;
       }[],
       importBatchId: string,
@@ -609,7 +609,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         state: r.state ?? '',
         latitude: r.latitude ?? 0,
         longitude: r.longitude ?? 0,
-        fsq_place_id: r.fsqPlaceId ?? null,
+        place_id: r.placeId ?? null,
         import_batch_id: importBatchId,
       }));
       const { data, error } = await supabase.from('want_to_try').insert(rows).select();

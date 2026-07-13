@@ -91,7 +91,7 @@ export interface Memory {
   visits: Visit[];       // return visits (lightweight check-ins)
   photoDates?: Record<string, string>;  // photo URL → ISO date for carousel date labels
   tiedGroupId?: string | null;  // memories sharing this id always get the same compositeScore
-  fsqPlaceId?: string | null;   // exact Foursquare place id (dedupe, chain detection)
+  placeId?: string | null;   // exact place id — Google Places (dedupe, chain detection)
 }
 
 export interface WantToTryEntry {
@@ -105,7 +105,7 @@ export interface WantToTryEntry {
   state: string;
   latitude: number;
   longitude: number;
-  fsqPlaceId?: string | null;   // exact Foursquare place id (dedupe, chain detection)
+  placeId?: string | null;   // exact place id — Google Places (dedupe, chain detection)
 }
 
 // ─── Score preference ─────────────────────────────────────────────

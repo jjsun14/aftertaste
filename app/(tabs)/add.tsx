@@ -291,7 +291,7 @@ export default function AddExperienceScreen() {
         isFavorite: false,
         visits: [],
         tiedGroupId: newMemoryTiedGroupId,
-        fsqPlaceId: sel.id,
+        placeId: sel.id,
       });
 
       // Update other memories in the group with redistributed scores

@@ -249,13 +249,16 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
         onPress={() => {
           Keyboard.dismiss();
           // Check for matches — exact (same name+address) or name-only (chain at different location)
+          // Exact identity via stored place id when available (new
+          // memories store it); name+address as the legacy fallback.
           const exactMatch = memories.find(
-            (m) => m.restaurantName.toLowerCase() === item.name.toLowerCase()
-              && m.address === item.address
+            (m) =>
+              (m.placeId && m.placeId === item.id) ||
+              (m.restaurantName.toLowerCase() === item.name.toLowerCase()
+                && m.address === item.address)
           );
           const nameOnlyMatch = !exactMatch && memories.find(
             (m) => m.restaurantName.toLowerCase() === item.name.toLowerCase()
-              && m.address !== item.address
           );
 
           if (exactMatch && onReturnVisit) {
@@ -309,7 +312,7 @@ export default function StepSearch({ onSelect, onReturnVisit, onQuickCheckin }: 
                 address: place.address,
                 latitude: place.latitude,
                 longitude: place.longitude,
-                fsqPlaceId: place.id,
+                placeId: place.id,
               });
             }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}

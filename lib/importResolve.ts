@@ -147,7 +147,7 @@ async function resolveOne(
   batchLabel: string,
   cityCache: Map<string, Coords | null>,
   existingKeys: Set<string>,
-  existingFsqIds: Set<string>,
+  existingPlaceIds: Set<string>,
 ): Promise<ResolvedRow> {
   // Location precedence: exact coords from a Maps URL → the row's own
   // city hint (geocoded near the batch area) → the batch default.
@@ -180,7 +180,7 @@ async function resolveOne(
   }
 
   const top = candidates[0];
-  const isDupe = existingFsqIds.has(top.id) || existingKeys.has(normalizeName(top.name));
+  const isDupe = existingPlaceIds.has(top.id) || existingKeys.has(normalizeName(top.name));
   if (isDupe) {
     return { ...base, status: 'duplicate', chosen: top, excluded: true };
   }
@@ -194,8 +194,8 @@ async function resolveOne(
 
 /**
  * Resolve all rows with limited concurrency. `existingKeys` = normalized
- * names of current memories + want-to-try; `existingFsqIds` = their
- * fsq_place_ids where known. Duplicate rows within the batch itself are
+ * names of current memories + want-to-try; `existingPlaceIds` = their
+ * place_ids where known. Duplicate rows within the batch itself are
  * collapsed before any network call (saves quota).
  */
 export async function resolveRows(
@@ -203,7 +203,7 @@ export async function resolveRows(
   bias: Coords | null,
   batchLabel: string,
   existingKeys: Set<string>,
-  existingFsqIds: Set<string>,
+  existingPlaceIds: Set<string>,
   onProgress?: (done: number, total: number) => void,
 ): Promise<ResolvedRow[]> {
   // In-batch dedupe by normalized name
@@ -223,7 +223,7 @@ export async function resolveRows(
   async function worker() {
     while (next < unique.length) {
       const i = next++;
-      out[i] = await resolveOne(unique[i], bias, batchLabel, cityCache, existingKeys, existingFsqIds);
+      out[i] = await resolveOne(unique[i], bias, batchLabel, cityCache, existingKeys, existingPlaceIds);
       done++;
       onProgress?.(done, unique.length);
     }

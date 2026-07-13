@@ -129,31 +129,62 @@ export default function ImportScreen() {
   const keptRows = parsed.filter((p) => p.kept).map((p) => p.row);
 
   // ── Resolve the kept rows against Google Places ──
+  // Incremental: going back to preview and forward again re-resolves
+  // NOTHING that's already matched — deselected rows are dropped from the
+  // review, newly (re)selected rows are the only ones that hit the API.
   const handleStartMatching = async () => {
     const rows = keptRows;
     if (rows.length === 0) return;
+
+    const alreadyResolved = new Map(resolved.map((r) => [normalizeName(r.row.name), r]));
+    const newRows = rows.filter((r) => !alreadyResolved.has(normalizeName(r.name)));
+    const keptKeys = new Set(rows.map((r) => normalizeName(r.name)));
+
+    // Nothing new — just prune deselected rows and show the review again
+    if (newRows.length === 0 && resolved.length > 0) {
+      setResolved((prev) => prev.filter((r) => keptKeys.has(normalizeName(r.row.name))));
+      setPhase('review');
+      return;
+    }
 
     const existingKeys = new Set<string>([
       ...memories.map((m) => normalizeName(m.restaurantName)),
       ...wantToTry.map((e) => normalizeName(e.restaurantName)),
     ]);
-    const existingFsqIds = new Set<string>(
-      [...memories.map((m) => m.fsqPlaceId), ...wantToTry.map((e) => e.fsqPlaceId)]
+    const existingPlaceIds = new Set<string>(
+      [...memories.map((m) => m.placeId), ...wantToTry.map((e) => e.placeId)]
         .filter((id): id is string => !!id),
     );
 
     setPhase('resolving');
-    setProgress({ done: 0, total: rows.length });
+    setProgress({ done: 0, total: newRows.length });
     try {
-      const results = await resolveRows(rows, bias, biasLabel, existingKeys, existingFsqIds, (done, total) =>
+      const fresh = await resolveRows(newRows, bias, biasLabel, existingKeys, existingPlaceIds, (done, total) =>
         setProgress({ done, total }),
       );
-      setResolved(results);
+      // Merge: surviving previous work + newly resolved, in kept order
+      const freshByKey = new Map(fresh.map((r) => [normalizeName(r.row.name), r]));
+      const merged = rows
+        .map((r) => alreadyResolved.get(normalizeName(r.name)) ?? freshByKey.get(normalizeName(r.name)))
+        .filter((r): r is ResolvedRow => !!r);
+      setResolved(merged);
       setPhase('review');
     } catch (err: any) {
       Alert.alert('Could not match places', err.message ?? 'Something went wrong.');
       setPhase('preview');
     }
+  };
+
+  const handleClose = () => {
+    const hasWork = phase === 'preview' || phase === 'resolving' || phase === 'review';
+    if (!hasWork) {
+      router.back();
+      return;
+    }
+    Alert.alert('Discard this import?', 'Your matched places will be lost.', [
+      { text: 'Keep working', style: 'cancel' },
+      { text: 'Discard', style: 'destructive', onPress: () => router.back() },
+    ]);
   };
 
   // ── Review actions ──
@@ -237,7 +268,7 @@ export default function ImportScreen() {
           state: p.state,
           latitude: p.latitude,
           longitude: p.longitude,
-          fsqPlaceId: p.id,
+          placeId: p.id,
           cuisineType: p.category,
         })),
         batchId,
@@ -279,7 +310,7 @@ export default function ImportScreen() {
           )}
           <Text style={styles.title}>Import Places</Text>
         </View>
-        <TouchableOpacity style={styles.closeBtn} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.closeBtn} onPress={handleClose}>
           <Ionicons name="close" size={20} color={Colors.textPrimary} />
         </TouchableOpacity>
       </View>
@@ -324,10 +355,17 @@ export default function ImportScreen() {
           ) : (
             <TouchableOpacity style={styles.biasPill} onPress={() => setEditingBias(true)}>
               <Ionicons name="location" size={14} color={Colors.purple} />
-              <Text style={styles.biasPillText} numberOfLines={1}>
-                {biasLabel === 'Anywhere'
-                  ? 'Where are most of these places located?'
-                  : `Most places are near: ${biasLabel}`}
+              <Text style={styles.biasPillLabel} numberOfLines={1}>
+                {biasLabel === 'Anywhere' ? (
+                  'Where are most of these places located?'
+                ) : (
+                  <>
+                    Most places are near:{' '}
+                    <Text style={styles.biasPillValue}>
+                      {biasLabel.replace(/, United States$/, '')}
+                    </Text>
+                  </>
+                )}
               </Text>
               <Ionicons name="pencil-outline" size={13} color={Colors.textMuted} />
             </TouchableOpacity>
@@ -643,7 +681,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 12,
   },
-  biasPillText: { flex: 1, color: Colors.purple, fontSize: 13, fontWeight: '500' },
+  biasPillLabel: { flex: 1, color: Colors.textSecondary, fontSize: 13, fontWeight: '500' },
+  biasPillValue: { color: Colors.purple, fontWeight: '600' },
   biasInputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
