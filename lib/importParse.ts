@@ -15,6 +15,7 @@ export interface ParsedRow {
   coords?: { lat: number; lng: number }; // exact hint (e.g. from a Maps URL) — beats city
   note?: string;    // free text carried into the entry later
   rating?: number;  // normalized to 0–10 when detected (unused in WTT phase)
+  date?: string;    // ISO YYYY-MM-DD when the data says when they went
 }
 
 // ── Column header synonyms ─────────────────────────────────────────
@@ -23,8 +24,20 @@ const HEADER_SYNONYMS: Record<string, RegExp> = {
   city: /^(city|town|location|area|where)$/i,
   rating: /^(rating|score|stars?|rank)$/i,
   note: /^(note|notes|comment|comments|review|description)$/i,
+  date: /^(date|visited|when|visit ?date)$/i,
   url: /^(url|link|maps? ?(url|link)?)$/i,
 };
+
+/** Best-effort: parse a cell into an ISO date, or undefined. */
+function parseDateCell(cell: string): string | undefined {
+  const t = cell.trim();
+  if (!t) return undefined;
+  const ms = Date.parse(t);
+  if (Number.isNaN(ms)) return undefined;
+  const d = new Date(ms);
+  if (d.getFullYear() < 1990 || d.getFullYear() > 2100) return undefined;
+  return d.toISOString().split('T')[0];
+}
 
 /**
  * Google Maps URLs (e.g. from Takeout CSVs) often embed the coordinates
@@ -175,6 +188,7 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
   const cityIdx = columns.indexOf('city');
   const ratingIdx = columns.indexOf('rating');
   const noteIdx = columns.indexOf('note');
+  const dateIdx = columns.indexOf('date');
   const urlIdx = columns.indexOf('url');
 
   const dataLines = hasHeader ? lines.slice(1) : lines;
@@ -211,6 +225,7 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
       city: cityIdx !== -1 ? cells[cityIdx]?.trim() || undefined : undefined,
       coords,
       note: noteIdx !== -1 ? cells[noteIdx]?.trim() || undefined : undefined,
+      date: dateIdx !== -1 && cells[dateIdx] ? parseDateCell(cells[dateIdx]) : undefined,
       rating,
     });
   }

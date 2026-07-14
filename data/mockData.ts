@@ -109,6 +109,7 @@ export interface ImportQueueItem {
   category: string;
   prefillRating: number | null;  // 0-10 from the imported data, if one was found
   prefillNote: string | null;
+  prefillDate: string | null;    // ISO visit date from the imported data
   importBatchId: string | null;
 }
 

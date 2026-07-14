@@ -66,6 +66,7 @@ interface StepLogProps {
   /** Prefill for import graduation — starting values only, user edits win. */
   initialData?: {
     note?: string;
+    date?: string; // ISO YYYY-MM-DD
     taste?: RatingLevel;
     vibe?: RatingLevel;
     value?: RatingLevel;
@@ -73,7 +74,13 @@ interface StepLogProps {
 }
 
 export default function StepLog({ restaurant, onNext, onDataChange, initialData }: StepLogProps) {
-  const [visitDate, setVisitDate] = useState(new Date());
+  const [visitDate, setVisitDate] = useState(() => {
+    if (initialData?.date) {
+      const d = new Date(initialData.date + 'T12:00:00');
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return new Date();
+  });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [foodItems, setFoodItems] = useState('');
   const [occasion, setOccasion] = useState<OccasionTag>('Regular Meal');

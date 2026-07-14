@@ -116,6 +116,7 @@ function rowToQueueItem(row: any): ImportQueueItem {
     category: row.category ?? '',
     prefillRating: row.prefill_rating ?? null,
     prefillNote: row.prefill_note ?? null,
+    prefillDate: row.prefill_date ?? null,
     importBatchId: row.import_batch_id ?? null,
   };
 }
@@ -178,6 +179,7 @@ interface ImportQueueContext {
       category?: string;
       prefillRating?: number | null;
       prefillNote?: string | null;
+      prefillDate?: string | null;
     }[],
     importBatchId: string,
   ) => Promise<number>;
@@ -706,6 +708,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         category?: string;
         prefillRating?: number | null;
         prefillNote?: string | null;
+        prefillDate?: string | null;
       }[],
       importBatchId: string,
     ): Promise<number> => {
@@ -723,6 +726,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         category: r.category ?? '',
         prefill_rating: r.prefillRating ?? null,
         prefill_note: r.prefillNote ?? null,
+        prefill_date: r.prefillDate ?? null,
         import_batch_id: importBatchId,
       }));
       const { data, error } = await supabase.from('import_queue').insert(inserts).select();

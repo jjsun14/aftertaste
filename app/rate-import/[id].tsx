@@ -4,7 +4,7 @@
  * real memory and remove the queue row. Mirrors /rerank/[id]'s pattern of
  * hosting the shared step components in a standalone route.
  */
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Alert } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +16,7 @@ import StepCompare from '@/components/add/StepCompare';
 import { useMemories, useImportQueue } from '@/context/DataContext';
 import { useAuth } from '@/context/AuthContext';
 import { uploadPhoto } from '@/lib/uploadPhoto';
+import { fetchPriceTier } from '@/lib/googlePlaces';
 import { planTierInsertion } from '@/lib/ranking';
 import {
   determineTier,
@@ -39,6 +40,21 @@ export default function RateImportScreen() {
   const [logData, setLogData] = useState<LogFormData | null>(null);
   const [saving, setSaving] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [priceTier, setPriceTier] = useState<'$' | '$$' | '$$$' | '$$$$' | undefined>(undefined);
+
+  // Price prefill parity with the regular Add flow: one best-effort
+  // Enterprise details call per graduation, adopted by StepLog unless
+  // the user picks a tier themselves.
+  useEffect(() => {
+    let live = true;
+    if (item?.placeId) {
+      fetchPriceTier(item.placeId).then((tier) => {
+        if (live && tier) setPriceTier(tier);
+      });
+    }
+    return () => { live = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [item?.placeId]);
 
   if (!item) {
     return (
@@ -60,7 +76,7 @@ export default function RateImportScreen() {
     state: item.state || undefined,
     distance: '',
     category: item.category,
-    priceTier: undefined,
+    priceTier,
     isVisited: false,
     isBookmarked: false,
     latitude: item.latitude || undefined,
@@ -193,6 +209,7 @@ export default function RateImportScreen() {
             onDataChange={setLogData}
             initialData={{
               note: item.prefillNote ?? undefined,
+              date: item.prefillDate ?? undefined,
               taste: prefillLevel,
               vibe: prefillLevel,
               value: prefillLevel,

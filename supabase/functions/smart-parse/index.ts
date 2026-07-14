@@ -27,8 +27,9 @@ const SCHEMA = {
           city: { anyOf: [{ type: 'string' }, { type: 'null' }] },
           note: { anyOf: [{ type: 'string' }, { type: 'null' }] },
           rating: { anyOf: [{ type: 'number' }, { type: 'null' }] },
+          date: { anyOf: [{ type: 'string' }, { type: 'null' }] },
         },
-        required: ['name', 'city', 'note', 'rating'],
+        required: ['name', 'city', 'note', 'rating', 'date'],
         additionalProperties: false,
       },
     },
@@ -56,6 +57,9 @@ Rules:
   normalized to a 0-10 scale (e.g. "9/10" → 9, "4.5/5" → 9, "★★★★" → 8).
   If there are score tables, multiple raters' scores, or per-dimension scores
   (e.g. rows of numbers under "value, atmosphere, delicious"), use null.
+- date: ONLY if the text indicates when the person went (a written date next
+  to the place). Format as YYYY-MM-DD; use null when no date is present or it
+  is ambiguous. Never invent a date.
 - Skip lines that are not places: list titles, section markers like <meal>,
   rating-dimension headers, rows of numbers, and stray text.
 - Do not invent places. Do not merge distinct places. Do not translate names.`;

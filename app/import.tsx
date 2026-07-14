@@ -144,6 +144,7 @@ export default function ImportScreen() {
                 city: p.city ?? undefined,
                 note: p.note ?? undefined,
                 rating: typeof p.rating === 'number' ? p.rating : undefined,
+                date: typeof p.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(p.date) ? p.date : undefined,
               }),
             );
         }
@@ -318,6 +319,7 @@ export default function ImportScreen() {
             category: places[i].category,
             prefillRating: r.row.rating ?? null,
             prefillNote: r.row.note ?? null,
+            prefillDate: r.row.date ?? null,
           })),
           batchId,
         );
