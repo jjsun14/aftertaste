@@ -8,6 +8,7 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as XLSX from 'xlsx';
+import { savedPlacesJsonToCsv } from '@/lib/importParse';
 
 export interface PickedImportFile {
   fileName: string;
@@ -18,6 +19,7 @@ const PICKER_TYPES = [
   'text/csv',
   'text/comma-separated-values',
   'text/plain',
+  'application/json', // Takeout "Maps (your places)" → Saved Places.json
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
   'application/vnd.ms-excel', // .xls
 ];
@@ -45,6 +47,20 @@ export async function pickImportFile(): Promise<PickedImportFile | null> {
     encoding: FileSystem.EncodingType.UTF8,
   });
   if (!text.trim()) throw new Error('That file looks empty.');
+
+  // Google Takeout's other export path ("Maps (your places)") produces
+  // Saved Places.json — GeoJSON with exact coordinates. Detected by
+  // content, not extension, so a misnamed file still works.
+  if (/^\s*\{/.test(text)) {
+    const csv = savedPlacesJsonToCsv(text);
+    if (csv) return { fileName, text: csv };
+    if (/\.json$/i.test(fileName)) {
+      throw new Error(
+        "That JSON file doesn't look like a Google Maps export (Saved Places.json).",
+      );
+    }
+  }
+
   return { fileName, text };
 }
 

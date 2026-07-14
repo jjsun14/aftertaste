@@ -27,6 +27,8 @@ const HEADER_SYNONYMS: Record<string, RegExp> = {
   note: /^(note|notes|comment|comments|review|description)$/i,
   date: /^(date|visited|when|visit ?date)$/i,
   url: /^(url|link|maps? ?(url|link)?)$/i,
+  lat: /^(lat|latitude)$/i,
+  lng: /^(lng|lon|long|longitude)$/i,
 };
 
 /** Best-effort: parse a cell into an ISO date, or undefined. */
@@ -232,6 +234,8 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
   const noteIdx = columns.indexOf('note');
   const dateIdx = columns.indexOf('date');
   const urlIdx = columns.indexOf('url');
+  const latIdx = columns.indexOf('lat');
+  const lngIdx = columns.indexOf('lng');
 
   const dataLines = hasHeader ? lines.slice(1) : lines;
   if (nameIdx === -1) {
@@ -269,6 +273,20 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
       (urlIdx !== -1 ? cells[urlIdx] : undefined) ??
       cells.find((c) => /^https?:\/\//i.test(c));
     if (urlCell) coords = coordsFromUrl(urlCell);
+
+    // Explicit Latitude/Longitude columns (e.g. converted Saved
+    // Places.json, or any spreadsheet that carries coordinates).
+    if (!coords && latIdx !== -1 && lngIdx !== -1) {
+      const lat = parseFloat(cells[latIdx] ?? '');
+      const lng = parseFloat(cells[lngIdx] ?? '');
+      if (
+        Number.isFinite(lat) && Number.isFinite(lng) &&
+        Math.abs(lat) <= 90 && Math.abs(lng) <= 180 &&
+        !(lat === 0 && lng === 0)
+      ) {
+        coords = { lat, lng };
+      }
+    }
 
     const colNote = noteIdx !== -1 ? cells[noteIdx]?.trim() || undefined : undefined;
     rows.push({
@@ -308,6 +326,52 @@ export function looksTabular(text: string): boolean {
     return splitCsvLine(lines[0]).map(classifyHeader).includes('name');
   }
   return false;
+}
+
+/**
+ * Google Takeout "Maps (your places)" → Saved Places.json (GeoJSON,
+ * starred places) → CSV with Title/Latitude/Longitude/Note columns,
+ * which the tabular parser reads exactly — coordinates become per-row
+ * location hints (the strongest kind). Handles both property spellings
+ * Google has shipped (Title/Location vs title/location). Returns null
+ * when the text isn't this format.
+ */
+export function savedPlacesJsonToCsv(text: string): string | null {
+  let doc: any;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  const features = Array.isArray(doc?.features) ? doc.features : null;
+  if (!features) return null;
+
+  const esc = (s: string) => `"${String(s).replace(/"/g, '""')}"`;
+  const lines = ['Title,Latitude,Longitude,Note'];
+  for (const f of features) {
+    const p = f?.properties ?? {};
+    const loc = p.location ?? p.Location ?? {};
+    const name = String(
+      p.Title ?? p.title ?? loc.name ?? loc['Business Name'] ?? loc.address ?? loc.Address ?? '',
+    ).trim();
+    if (!name) continue;
+
+    let lat = '';
+    let lng = '';
+    const c = f?.geometry?.coordinates; // GeoJSON order: [lng, lat]
+    if (
+      Array.isArray(c) &&
+      typeof c[0] === 'number' && typeof c[1] === 'number' &&
+      !(c[0] === 0 && c[1] === 0) && Math.abs(c[1]) <= 90
+    ) {
+      lng = String(c[0]);
+      lat = String(c[1]);
+    }
+
+    const note = String(p.Comment ?? p.comment ?? '').trim();
+    lines.push([esc(name), lat, lng, esc(note)].join(','));
+  }
+  return lines.length > 1 ? lines.join('\n') : null;
 }
 
 // ── Entry point ────────────────────────────────────────────────────
