@@ -125,7 +125,9 @@ export default function ImportScreen() {
 
     let rows: ParsedRow[] | null = null;
     try {
-      if (!looksTabular(input)) {
+      // smart-parse rejects input over its 20K-char cost cap — don't
+      // bother calling it; the local parser handles oversized files.
+      if (!looksTabular(input) && input.length <= 20000) {
         const timeout = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('smart-parse timeout')), 25000),
         );

@@ -20,7 +20,8 @@ export interface ParsedRow {
 
 // ── Column header synonyms ─────────────────────────────────────────
 const HEADER_SYNONYMS: Record<string, RegExp> = {
-  name: /^(name|restaurant|place|title|spot|venue)s?$/i,
+  // "Name", "Title", "Restaurant", "Place Name", "restaurant_name", …
+  name: /^(name|title|(restaurant|place|spot|venue|business)s?([\s_-]*name)?)s?$/i,
   city: /^(city|town|location|area|where)$/i,
   rating: /^(rating|score|stars?|rank)$/i,
   note: /^(note|notes|comment|comments|review|description)$/i,
@@ -67,6 +68,50 @@ function classifyHeader(cell: string): string | null {
     if (re.test(trimmed)) return kind;
   }
   return null;
+}
+
+// ── Name-column heuristics (for tables without an explicit name header) ──
+function looksLikeName(cell: string): boolean {
+  const t = cell.trim();
+  if (!t || /^https?:\/\//i.test(t)) return false;
+  if (!/\p{L}{2}/u.test(t)) return false; // needs at least two letters
+  if (/\d/.test(t) && parseDateCell(t) !== undefined) return false; // date-like
+  return true;
+}
+
+/**
+ * Given headerless table rows, pick the column most likely to hold the
+ * restaurant names: the leftmost column whose cells are mostly words
+ * (not index numbers, dates, scores, or URLs).
+ */
+function chooseNameColumn(rows: string[][]): number {
+  const colCount = Math.max(0, ...rows.map((r) => r.length));
+  let bestIdx = 0;
+  let bestScore = -1;
+  for (let c = 0; c < colCount; c++) {
+    const cells = rows.map((r) => r[c] ?? '').filter((x) => x.trim());
+    if (cells.length === 0) continue;
+    const score = cells.filter(looksLikeName).length / cells.length;
+    if (score >= 0.6) return c; // leftmost plausibly-name column wins
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = c;
+    }
+  }
+  return bestIdx;
+}
+
+/**
+ * A trailing parenthetical hurts search matching, so it moves from the
+ * name into the note — "Katz's Deli (go before noon)" → name + note.
+ * Used for freeform lines and for name cells in tables alike.
+ */
+function splitTrailingParen(s: string): { name: string; parenNote?: string } {
+  const m = s.match(/\(([^)]{2,30})\)\s*$/);
+  if (!m) return { name: s };
+  const name = s.slice(0, m.index).trim();
+  if (!name) return { name: s }; // the whole cell was parenthesized — keep it
+  return { name, parenNote: m[1].trim() };
 }
 
 // ── Rating extraction ──────────────────────────────────────────────
@@ -131,12 +176,9 @@ function parseFreeformLine(line: string): ParsedRow | null {
   // guessing "(fries)" vs "(Ellicott City)" was too inaccurate; location
   // hints only come from trusted sources (City columns, Maps-URL coords),
   // and any row's search location is editable on the review screen.
-  let parenNote: string | undefined;
-  const paren = s.match(/\(([^)]{2,30})\)\s*$/);
-  if (paren) {
-    parenNote = paren[1].trim();
-    s = s.slice(0, paren.index).trim();
-  }
+  const parenSplit = splitTrailingParen(s);
+  const parenNote = parenSplit.parenNote;
+  s = parenSplit.name;
 
   // First separator splits name from note
   let name = s;
@@ -192,13 +234,22 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
   const urlIdx = columns.indexOf('url');
 
   const dataLines = hasHeader ? lines.slice(1) : lines;
-  if (nameIdx === -1) nameIdx = 0; // convention: first column is the name
+  if (nameIdx === -1) {
+    // No explicit name column. With a recognized header, the name is
+    // most plausibly the first *unrecognized* column ("When, Spot we
+    // ate at, Stars" → column 1); headerless, judge by cell contents.
+    nameIdx = hasHeader
+      ? columns.findIndex((c) => c === null)
+      : chooseNameColumn(dataLines.map(split));
+    if (nameIdx === -1) nameIdx = 0;
+  }
 
   const rows: ParsedRow[] = [];
   for (const line of dataLines) {
     const cells = split(line);
-    const name = (cells[nameIdx] ?? '').trim();
-    if (!name) continue;
+    const rawName = (cells[nameIdx] ?? '').trim();
+    if (!rawName) continue;
+    const { name, parenNote } = splitTrailingParen(rawName);
 
     let rating: number | undefined;
     if (ratingIdx !== -1 && cells[ratingIdx]) {
@@ -219,12 +270,13 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
       cells.find((c) => /^https?:\/\//i.test(c));
     if (urlCell) coords = coordsFromUrl(urlCell);
 
+    const colNote = noteIdx !== -1 ? cells[noteIdx]?.trim() || undefined : undefined;
     rows.push({
       raw: line,
       name,
       city: cityIdx !== -1 ? cells[cityIdx]?.trim() || undefined : undefined,
       coords,
-      note: noteIdx !== -1 ? cells[noteIdx]?.trim() || undefined : undefined,
+      note: [colNote, parenNote].filter(Boolean).join(' · ') || undefined,
       date: dateIdx !== -1 && cells[dateIdx] ? parseDateCell(cells[dateIdx]) : undefined,
       rating,
     });
@@ -233,9 +285,12 @@ function parseTabular(lines: string[], delimiter: 'tab' | 'csv'): ParsedRow[] | 
 }
 
 /**
- * True when the pasted text is structured (spreadsheet tabs or a header
- * CSV) — those parse exactly with the deterministic path, so the smart
- * parse (LLM) should be skipped.
+ * True when the text is structured enough that the deterministic parser
+ * is *exact* — so the smart parse (LLM) should be skipped. The bar is an
+ * explicit name column: a header like "Date, Score, Spot we ate at" is
+ * recognized-but-ambiguous (which column is the name?), and ambiguity is
+ * the LLM's job. Headerless tab data (spreadsheet cell copies) is the
+ * one convention we trust without a header.
  */
 export function looksTabular(text: string): boolean {
   const lines = text
@@ -244,9 +299,13 @@ export function looksTabular(text: string): boolean {
     .filter(Boolean);
   if (lines.length === 0) return false;
   const tabbed = lines.filter((l) => l.includes('\t')).length;
-  if (tabbed >= lines.length / 2) return true;
+  if (tabbed >= lines.length / 2) {
+    const columns = lines[0].split('\t').map((c) => classifyHeader(c.trim()));
+    const hasHeader = columns.some((c) => c !== null);
+    return !hasHeader || columns.includes('name');
+  }
   if (lines.length >= 2 && lines[0].includes(',')) {
-    return splitCsvLine(lines[0]).map(classifyHeader).filter(Boolean).length >= 1;
+    return splitCsvLine(lines[0]).map(classifyHeader).includes('name');
   }
   return false;
 }
@@ -270,6 +329,20 @@ export function parseImportText(text: string): ParsedRow[] {
   if (lines.length >= 2 && lines[0].includes(',')) {
     const headerHits = splitCsvLine(lines[0]).map(classifyHeader).filter(Boolean).length;
     if (headerHits >= 1) {
+      const rows = parseTabular(lines, 'csv');
+      if (rows) return rows;
+    }
+  }
+
+  // Headerless CSV with a consistent shape (≥3 columns on ≥80% of lines):
+  // the no-LLM fallback for files too big for smart-parse. Never treats a
+  // whole CSV line as a name — chooseNameColumn picks the name column by
+  // cell contents. (2-column lines stay freeform: "Name, City" searches
+  // fine as a single query.)
+  if (lines.length >= 3) {
+    const counts = lines.map((l) => splitCsvLine(l).length);
+    const shape = counts[0];
+    if (shape >= 3 && counts.filter((c) => c === shape).length >= lines.length * 0.8) {
       const rows = parseTabular(lines, 'csv');
       if (rows) return rows;
     }
