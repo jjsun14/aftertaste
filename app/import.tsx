@@ -25,6 +25,7 @@ import * as Crypto from 'expo-crypto';
 import { Colors } from '@/theme/colors';
 import { useMemories, useWantToTry, useImportQueue } from '@/context/DataContext';
 import { parseImportText, looksTabular, type ParsedRow } from '@/lib/importParse';
+import { pickImportFile } from '@/lib/importFile';
 import { supabase } from '@/lib/supabase';
 import {
   resolveRows,
@@ -119,19 +120,17 @@ export default function ImportScreen() {
   // failure falls back to the local parser too — this step can't dead-end.
   const [parsing, setParsing] = useState(false);
 
-  const handleFindPlaces = async () => {
-    Keyboard.dismiss();
-    if (!text.trim() || parsing) return;
+  const parseAndPreview = async (input: string) => {
     setParsing(true);
 
     let rows: ParsedRow[] | null = null;
     try {
-      if (!looksTabular(text)) {
+      if (!looksTabular(input)) {
         const timeout = new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('smart-parse timeout')), 25000),
         );
         const { data, error } = (await Promise.race([
-          supabase.functions.invoke('smart-parse', { body: { text } }),
+          supabase.functions.invoke('smart-parse', { body: { text: input } }),
           timeout,
         ])) as { data: any; error: any };
         if (!error && Array.isArray(data?.places) && data.places.length > 0) {
@@ -152,7 +151,7 @@ export default function ImportScreen() {
     } catch {
       // fall through to the local parser
     }
-    if (!rows || rows.length === 0) rows = parseImportText(text);
+    if (!rows || rows.length === 0) rows = parseImportText(input);
     setParsing(false);
 
     if (rows.length === 0) {
@@ -165,6 +164,29 @@ export default function ImportScreen() {
     }
     setParsed(rows.map((row) => ({ row, kept: true })));
     setPhase('preview');
+  };
+
+  const handleFindPlaces = async () => {
+    Keyboard.dismiss();
+    if (!text.trim() || parsing) return;
+    await parseAndPreview(text);
+  };
+
+  // File intake (.csv / .xlsx) — same parse pipeline as paste. Google
+  // Takeout list CSVs land here after the user unzips the export.
+  const handlePickFile = async () => {
+    if (parsing) return;
+    try {
+      const picked = await pickImportFile();
+      if (!picked) return; // cancelled
+      await parseAndPreview(picked.text);
+    } catch (err: any) {
+      setParsing(false);
+      Alert.alert(
+        'Could not read that file',
+        err?.message ?? 'Try exporting it as a CSV and importing again.',
+      );
+    }
   };
 
   const toggleParsedRow = (index: number) => {
@@ -383,7 +405,7 @@ export default function ImportScreen() {
       {phase === 'input' && (
         <View style={styles.body}>
           <Text style={styles.hint}>
-            Paste your list — from Notes, a text, or cells copied out of a spreadsheet. One place per line. (CSV / Excel file upload coming soon.)
+            Paste your list — from Notes, a text, or cells copied out of a spreadsheet. One place per line. Or upload a CSV or Excel file below.
           </Text>
           <TextInput
             style={styles.pasteBox}
@@ -450,6 +472,18 @@ export default function ImportScreen() {
               <Text style={styles.primaryBtnText}>Find my places</Text>
             )}
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.fileBtn, parsing && styles.primaryBtnDisabled]}
+            disabled={parsing}
+            onPress={handlePickFile}
+          >
+            <Ionicons name="document-attach-outline" size={18} color={Colors.textPrimary} />
+            <Text style={styles.fileBtnText}>Upload a CSV or Excel file</Text>
+          </TouchableOpacity>
+          <Text style={styles.fileHint}>
+            Google Maps lists: takeout.google.com → Saved → unzip → pick a list&apos;s CSV here.
+          </Text>
         </View>
       )}
 
@@ -822,6 +856,23 @@ const styles = StyleSheet.create({
   primaryBtnDisabled: { opacity: 0.4 },
   primaryBtnText: { color: '#000', fontSize: 15, fontWeight: '700' },
   btnRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  fileBtn: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: Colors.surfaceLight,
+    borderRadius: 12,
+    height: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 10,
+  },
+  fileBtnText: { color: Colors.textPrimary, fontSize: 15, fontWeight: '600' },
+  fileHint: {
+    color: Colors.textMuted,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 8,
+  },
   destRow: {
     flexDirection: 'row',
     alignItems: 'center',
