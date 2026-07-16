@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, ScrollView } from 'react-native';
 import SignedImage from '@/components/shared/SignedImage';
+import { Image } from 'expo-image';
+import { staticMapUrl } from '@/lib/staticMap';
 import { Colors } from '@/theme/colors';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -9,6 +11,8 @@ interface PhotoCarouselProps {
   photos: string[];
   height?: number;
   photoDates?: Record<string, string>; // photo URL → ISO date string
+  // Shown when there are no photos: a map snapshot of the place
+  mapFallback?: { latitude: number; longitude: number };
 }
 
 function formatShortDate(dateStr: string): string {
@@ -17,8 +21,27 @@ function formatShortDate(dateStr: string): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-export default function PhotoCarousel({ photos, height = 350, photoDates }: PhotoCarouselProps) {
+export default function PhotoCarousel({ photos, height = 350, photoDates, mapFallback }: PhotoCarouselProps) {
   const [activeIndex, setActiveIndex] = useState(0);
+
+  if (photos.length === 0 && mapFallback) {
+    return (
+      <View style={[styles.container, { height }]}>
+        <Image
+          source={{
+            uri: staticMapUrl(mapFallback.latitude, mapFallback.longitude, {
+              width: Math.round(SCREEN_WIDTH),
+              height: Math.round(height),
+              zoom: 14.6,
+            }),
+          }}
+          style={[styles.image, { height }]}
+          contentFit="cover"
+          transition={150}
+        />
+      </View>
+    );
+  }
 
   const handleScroll = (event: any) => {
     const offsetX = event.nativeEvent.contentOffset.x;

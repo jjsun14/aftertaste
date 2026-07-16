@@ -1,6 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet, Dimensions, Pressable } from 'react-native';
 import SignedImage from '@/components/shared/SignedImage';
+import { Image } from 'expo-image';
+import { staticMapUrl } from '@/lib/staticMap';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -39,6 +41,14 @@ export default function MemoryCard({ memory, visitCount, overrideScore }: Memory
           uri={memory.photos[0]}
           style={styles.image}
           contentFit="cover"
+        />
+      ) : memory.latitude && memory.longitude ? (
+        // No photo but a known location → map snapshot of the spot
+        <Image
+          source={{ uri: staticMapUrl(memory.latitude, memory.longitude) }}
+          style={styles.image}
+          contentFit="cover"
+          transition={150}
         />
       ) : (
         <View style={styles.photoPlaceholder}>

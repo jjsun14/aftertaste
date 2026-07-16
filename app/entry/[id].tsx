@@ -509,7 +509,16 @@ export default function EntryDetailScreen() {
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
         <View>
-          <PhotoCarousel photos={memory.photos} height={380} photoDates={memory.photoDates} />
+          <PhotoCarousel
+            photos={memory.photos}
+            height={380}
+            photoDates={memory.photoDates}
+            mapFallback={
+              memory.latitude && memory.longitude
+                ? { latitude: memory.latitude, longitude: memory.longitude }
+                : undefined
+            }
+          />
           <TouchableOpacity style={[styles.backBtn, { top: insets.top + 8 }]} onPress={() => router.back()}>
             <Ionicons name="chevron-back" size={24} color={Colors.white} />
           </TouchableOpacity>

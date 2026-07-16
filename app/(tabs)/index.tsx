@@ -7,6 +7,8 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import SignedImage from '@/components/shared/SignedImage';
+import { Image } from 'expo-image';
+import { staticMapUrl } from '@/lib/staticMap';
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -459,6 +461,18 @@ export default function MapScreen() {
           {selectedMemory.photos[0] ? (
             <SignedImage
               uri={selectedMemory.photos[0]}
+              style={styles.cardImage}
+              contentFit="cover"
+            />
+          ) : selectedMemory.latitude && selectedMemory.longitude ? (
+            <Image
+              source={{
+                uri: staticMapUrl(selectedMemory.latitude, selectedMemory.longitude, {
+                  width: 64,
+                  height: 64,
+                  zoom: 15.5,
+                }),
+              }}
               style={styles.cardImage}
               contentFit="cover"
             />
