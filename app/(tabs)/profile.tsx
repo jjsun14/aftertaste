@@ -36,8 +36,13 @@ function BottomSheet({
 }) {
   const sheetY = useRef(new Animated.Value(0)).current;
 
+  const scrollOffset = useRef(0);
   const panResponder = useRef(
     PanResponder.create({
+      // Steal from the ScrollView only when it's at the top and the
+      // finger is clearly pulling down — otherwise scrolling wins.
+      onMoveShouldSetPanResponderCapture: (_, gs) =>
+        scrollOffset.current <= 1 && gs.dy > 5 && Math.abs(gs.dy) > Math.abs(gs.dx) * 1.5,
       onMoveShouldSetPanResponder: (_, gs) =>
         gs.dy > 5 && Math.abs(gs.dy) > Math.abs(gs.dx),
       onPanResponderMove: (_, gs) => {
@@ -58,14 +63,19 @@ function BottomSheet({
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={onClose} />
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}>
-          <View {...panResponder.panHandlers} style={styles.dragArea}>
+        <Animated.View
+          {...panResponder.panHandlers}
+          style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}
+        >
+          <View style={styles.dragArea}>
             <View style={styles.sheetHandle} />
           </View>
           <ScrollView
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={{ paddingBottom }}
+            onScroll={(e) => { scrollOffset.current = e.nativeEvent.contentOffset.y; }}
+            scrollEventThrottle={16}
           >
             {children}
           </ScrollView>

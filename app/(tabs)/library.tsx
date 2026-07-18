@@ -304,9 +304,11 @@ export default function LibraryScreen() {
       {/* Filter bottom sheet */}
       <Modal visible={showFilterSheet} transparent animationType="slide" onRequestClose={() => setShowFilterSheet(false)}>
         <TouchableOpacity style={styles.sheetOverlay} activeOpacity={1} onPress={() => setShowFilterSheet(false)} />
-        <Animated.View style={[styles.sheet, { transform: [{ translateY: filterSheetY }] }]}>
-          {/* Drag handle — pan responder ONLY here so it doesn't fight ScrollViews */}
-          <View {...filterPanResponder.panHandlers} style={styles.dragArea}>
+        <Animated.View
+          {...filterPanResponder.panHandlers}
+          style={[styles.sheet, { transform: [{ translateY: filterSheetY }] }]}
+        >
+          <View style={styles.dragArea}>
             <View style={styles.sheetHandle} />
           </View>
 

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   Pressable,
   ActivityIndicator,
+  Animated,
 } from 'react-native';
 import SignedImage from '@/components/shared/SignedImage';
 import { Image } from 'expo-image';
@@ -154,6 +155,48 @@ function buildCityChips(memories: Memory[]): CityChip[] {
       },
     };
   });
+}
+
+// ── Animation polish ──────────────────────────────────────────────
+/** Soft expanding ring behind the selected pin (native-driver loop). */
+function PulsingRing({ color }: { color: string }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(anim, { toValue: 1, duration: 1600, useNativeDriver: true }),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [anim]);
+  const scale = anim.interpolate({ inputRange: [0, 1], outputRange: [0.6, 1.7] });
+  const opacity = anim.interpolate({ inputRange: [0, 0.6, 1], outputRange: [0.5, 0.22, 0] });
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[styles.pulseRing, { borderColor: color, opacity, transform: [{ scale }] }]}
+    />
+  );
+}
+
+/** Springs its content up from the bottom edge when it mounts. */
+function SlideUpCard({ children, style }: { children: React.ReactNode; style?: any }) {
+  const anim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.spring(anim, { toValue: 1, useNativeDriver: true, friction: 8, tension: 70 }).start();
+  }, [anim]);
+  return (
+    <Animated.View
+      style={[
+        style,
+        {
+          opacity: anim,
+          transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [80, 0] }) }],
+        },
+      ]}
+    >
+      {children}
+    </Animated.View>
+  );
 }
 
 // Default center: continental US
@@ -590,6 +633,30 @@ export default function MapScreen() {
           pulsing={{ isEnabled: true, color: '#2A3A4E', radius: 30 }}
         />
 
+        {/* ── Pulsing ring behind the selected pin ── */}
+        {selectedMemory && !!selectedMemory.latitude && !!selectedMemory.longitude && (
+          <MarkerView
+            coordinate={[selectedMemory.longitude, selectedMemory.latitude]}
+            anchor={{ x: 0.5, y: 0.5 }}
+            allowOverlapWithPuck
+          >
+            <View pointerEvents="none" style={styles.pulseWrap}>
+              <PulsingRing color={getScoreColor(selectedMemory.compositeScore)} />
+            </View>
+          </MarkerView>
+        )}
+        {selectedWtt && !selectedMemory && !!selectedWtt.latitude && !!selectedWtt.longitude && (
+          <MarkerView
+            coordinate={[selectedWtt.longitude, selectedWtt.latitude]}
+            anchor={{ x: 0.5, y: 0.5 }}
+            allowOverlapWithPuck
+          >
+            <View pointerEvents="none" style={styles.pulseWrap}>
+              <PulsingRing color={Colors.purple} />
+            </View>
+          </MarkerView>
+        )}
+
         {/* ── Selected pin highlight ── */}
         {selectedGeojson && (
           <ShapeSource id="selected-memory" shape={selectedGeojson}>
@@ -671,8 +738,9 @@ export default function MapScreen() {
 
       {/* ── Selected memory card ── */}
       {selectedMemory && (
+        <SlideUpCard key={selectedMemory.id} style={[styles.cardWrap, { bottom: 12 }]}>
         <TouchableOpacity
-          style={[styles.card, { bottom: 12 }]}
+          style={styles.card}
           activeOpacity={0.95}
           onPress={() => {
             setSelectedMemory(null);
@@ -728,11 +796,13 @@ export default function MapScreen() {
             />
           </View>
         </TouchableOpacity>
+        </SlideUpCard>
       )}
 
       {/* ── Selected want-to-try card ── */}
       {selectedWtt && !selectedMemory && (
-        <View style={[styles.card, { bottom: 12 }]}>
+        <SlideUpCard key={selectedWtt.id} style={[styles.cardWrap, { bottom: 12 }]}>
+        <View style={styles.card}>
           <View style={[styles.cardImage, styles.cardImagePlaceholder]}>
             <Ionicons name="bookmark" size={24} color={Colors.purple} />
           </View>
@@ -757,6 +827,7 @@ export default function MapScreen() {
             <Text style={styles.wttBadgeText}>Want to Try</Text>
           </View>
         </View>
+        </SlideUpCard>
       )}
 
       {/* Loading overlay */}
@@ -799,10 +870,25 @@ const styles = StyleSheet.create({
   },
 
   // ── Selected pin card ──
-  card: {
+  cardWrap: {
     position: 'absolute',
     left: 16,
     right: 16,
+  },
+  pulseWrap: {
+    width: 48,
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pulseRing: {
+    position: 'absolute',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 2.5,
+  },
+  card: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: Colors.surface,
