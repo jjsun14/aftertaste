@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
 } from 'react-native';
 import SignedImage from '@/components/shared/SignedImage';
@@ -274,9 +275,14 @@ export default function MapScreen() {
       if (!feature) return;
 
       if (feature.properties?.cluster) {
+        // getClusterExpansionZoom can hang and never settle — race it
+        // against a short timeout so the camera always moves.
         let expansionZoom: number | undefined;
         try {
-          expansionZoom = await shapeSourceRef.current?.getClusterExpansionZoom(feature);
+          expansionZoom = await Promise.race<number | undefined>([
+            shapeSourceRef.current?.getClusterExpansionZoom(feature) ?? Promise.resolve(undefined),
+            new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), 350)),
+          ]);
         } catch {
           // fall through to a fixed zoom bump
         }
@@ -318,19 +324,23 @@ export default function MapScreen() {
   }, []);
 
   // ── Tap a city chip → fly into that city ──
+  // Direct setCamera with a span-derived zoom (fitBounds proved
+  // unreliable when invoked from a MarkerView touch).
   const handleChipPress = useCallback((chip: CityChip) => {
     setSelectedMemory(null);
     setSelectedWtt(null);
-    if (chip.count === 1) {
-      cameraRef.current?.setCamera({
-        centerCoordinate: chip.center,
-        zoomLevel: 12,
-        animationDuration: 700,
-        animationMode: 'flyTo',
-      });
-    } else {
-      cameraRef.current?.fitBounds(chip.bounds.ne, chip.bounds.sw, [80, 80, 80, 80], 700);
-    }
+    const span = Math.max(
+      chip.bounds.ne[0] - chip.bounds.sw[0],
+      chip.bounds.ne[1] - chip.bounds.sw[1],
+      0.005,
+    );
+    const zoom = Math.max(8, Math.min(12.5, Math.log2(360 / span) - 1));
+    cameraRef.current?.setCamera({
+      centerCoordinate: chip.center,
+      zoomLevel: zoom,
+      animationDuration: 700,
+      animationMode: 'flyTo',
+    });
   }, []);
 
   // ── My location button ──
@@ -558,9 +568,9 @@ export default function MapScreen() {
               anchor={{ x: 0.5, y: 0.5 }}
               allowOverlapWithPuck
             >
-              <TouchableOpacity
-                style={styles.cityChip}
-                activeOpacity={0.85}
+              <Pressable
+                style={({ pressed }) => [styles.cityChip, pressed && { opacity: 0.8 }]}
+                hitSlop={10}
                 onPress={() => handleChipPress(chip)}
               >
                 <View
@@ -568,7 +578,7 @@ export default function MapScreen() {
                 />
                 {!!chip.label && <Text style={styles.cityChipName}>{chip.label}</Text>}
                 <Text style={styles.cityChipCount}>{chip.count}</Text>
-              </TouchableOpacity>
+              </Pressable>
             </MarkerView>
           ))}
 
