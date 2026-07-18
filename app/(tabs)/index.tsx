@@ -331,7 +331,12 @@ export default function MapScreen() {
               id="cluster-ring"
               filter={['has', 'point_count'] as any}
               style={{
-                circleRadius: ['step', ['get', 'point_count'], 18, 10, 21, 25, 24],
+                // Zoom-scaled so continent view gets compact circles
+                circleRadius: [
+                  'interpolate', ['linear'], ['zoom'],
+                  3, ['step', ['get', 'point_count'], 12, 10, 14, 25, 16],
+                  13, ['step', ['get', 'point_count'], 18, 10, 21, 25, 24],
+                ],
                 circleColor: CLUSTER_COLOR_EXPR,
                 circleOpacity: 0.22,
                 circlePitchAlignment: 'map',
@@ -341,7 +346,11 @@ export default function MapScreen() {
               id="cluster-circles"
               filter={['has', 'point_count'] as any}
               style={{
-                circleRadius: ['step', ['get', 'point_count'], 13, 10, 16, 25, 19],
+                circleRadius: [
+                  'interpolate', ['linear'], ['zoom'],
+                  3, ['step', ['get', 'point_count'], 9, 10, 11, 25, 13],
+                  13, ['step', ['get', 'point_count'], 13, 10, 16, 25, 19],
+                ],
                 circleColor: CLUSTER_COLOR_EXPR,
                 circleStrokeWidth: 2,
                 circleStrokeColor: '#FFFFFF',
@@ -354,7 +363,7 @@ export default function MapScreen() {
               style={{
                 textField: ['get', 'point_count_abbreviated'],
                 textFont: ['DIN Pro Bold', 'Arial Unicode MS Bold'],
-                textSize: 12,
+                textSize: ['interpolate', ['linear'], ['zoom'], 3, 10, 13, 12],
                 textColor: '#0B1120',
                 textAllowOverlap: true,
                 textIgnorePlacement: true,
@@ -370,7 +379,7 @@ export default function MapScreen() {
                   'interpolate', ['linear'], ['zoom'],
                   2, 4,
                   6, 6,
-                  10, 9,
+                  10, 10,
                   15, 14,
                 ],
                 circleColor: SCORE_COLOR_EXPR,
@@ -389,11 +398,11 @@ export default function MapScreen() {
             <SymbolLayer
               id="memory-scores"
               filter={['!', ['has', 'point_count']] as any}
-              minZoomLevel={12}
+              minZoomLevel={10}
               style={{
                 textField: ['get', 'scoreLabel'],
                 textFont: ['DIN Pro Bold', 'Arial Unicode MS Bold'],
-                textSize: ['interpolate', ['linear'], ['zoom'], 12, 8, 15, 10],
+                textSize: ['interpolate', ['linear'], ['zoom'], 10, 7.5, 15, 10],
                 textColor: '#0B1120',
                 textAllowOverlap: true,
                 textIgnorePlacement: true,
