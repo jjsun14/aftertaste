@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, Dimensions, Pressable } from 'react-native';
 import SignedImage from '@/components/shared/SignedImage';
 import { Image } from 'expo-image';
@@ -24,7 +24,10 @@ interface MemoryCardProps {
 export default function MemoryCard({ memory, visitCount, overrideScore }: MemoryCardProps) {
   const displayScore = overrideScore ?? memory.compositeScore;
   const scoreColor = getScoreColor(displayScore);
-  const hasPhoto = memory.photos.length > 0 && memory.photos[0];
+  // A photo that fails to load (dead URL, expired link) falls through
+  // to the map thumbnail / placeholder instead of a blank card
+  const [photoFailed, setPhotoFailed] = useState(false);
+  const hasPhoto = memory.photos.length > 0 && !!memory.photos[0] && !photoFailed;
 
   // Build location string — fall back gracefully when city/state are empty
   const locationParts = [memory.city, memory.state].filter(Boolean);
@@ -41,6 +44,7 @@ export default function MemoryCard({ memory, visitCount, overrideScore }: Memory
           uri={memory.photos[0]}
           style={styles.image}
           contentFit="cover"
+          onError={() => setPhotoFailed(true)}
         />
       ) : memory.latitude && memory.longitude ? (
         // No photo but a known location → map snapshot of the spot
