@@ -55,6 +55,7 @@ function memoriesToGeoJSON(memories: Memory[]): GeoJSON.FeatureCollection {
         properties: {
           id: m.id,
           score: m.compositeScore,
+          scoreLabel: m.compositeScore.toFixed(1),
           name: m.restaurantName,
         },
       })),
@@ -207,11 +208,28 @@ export default function MapScreen() {
     }, 300);
   }, [focusWtt, wantToTryEntries]);
 
-  // ── Tap a pin ──
+  // ── Tap a pin (or a cluster — zooms to where it splits apart) ──
   const handlePinPress = useCallback(
-    (event: any) => {
+    async (event: any) => {
       const feature = event.features?.[0];
       if (!feature) return;
+
+      if (feature.properties?.cluster) {
+        let expansionZoom: number | undefined;
+        try {
+          expansionZoom = await shapeSourceRef.current?.getClusterExpansionZoom(feature);
+        } catch {
+          // fall through to a fixed zoom bump
+        }
+        cameraRef.current?.setCamera({
+          centerCoordinate: feature.geometry?.coordinates,
+          zoomLevel: Math.min((expansionZoom ?? 13) + 0.3, 16),
+          animationDuration: 500,
+          animationMode: 'flyTo',
+        });
+        return;
+      }
+
       const id = feature.properties?.id;
       const found = memories.find((m) => m.id === id);
       if (!found) return;
@@ -295,19 +313,65 @@ export default function MapScreen() {
         {geojson.features.length > 0 && (
           <ShapeSource
             id="memories"
+            ref={shapeSourceRef}
             shape={geojson}
             onPress={handlePinPress}
             hitbox={{ width: 44, height: 44 }}
+            cluster
+            clusterRadius={25}
+            clusterMaxZoomLevel={13}
+            clusterProperties={{
+              // Sum of member scores → CLUSTER_COLOR_EXPR divides by count
+              totalScore: [['+', ['accumulated'], ['get', 'totalScore']], ['get', 'score']],
+            }}
           >
+            {/* Cluster: soft tier-colored ring + solid circle + count.
+                Tight radius means these only appear where dots overlap. */}
+            <CircleLayer
+              id="cluster-ring"
+              filter={['has', 'point_count'] as any}
+              style={{
+                circleRadius: ['step', ['get', 'point_count'], 18, 10, 21, 25, 24],
+                circleColor: CLUSTER_COLOR_EXPR,
+                circleOpacity: 0.22,
+                circlePitchAlignment: 'map',
+              }}
+            />
+            <CircleLayer
+              id="cluster-circles"
+              filter={['has', 'point_count'] as any}
+              style={{
+                circleRadius: ['step', ['get', 'point_count'], 13, 10, 16, 25, 19],
+                circleColor: CLUSTER_COLOR_EXPR,
+                circleStrokeWidth: 2,
+                circleStrokeColor: '#FFFFFF',
+                circlePitchAlignment: 'map',
+              }}
+            />
+            <SymbolLayer
+              id="cluster-counts"
+              filter={['has', 'point_count'] as any}
+              style={{
+                textField: ['get', 'point_count_abbreviated'],
+                textFont: ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+                textSize: 12,
+                textColor: '#0B1120',
+                textAllowOverlap: true,
+                textIgnorePlacement: true,
+              }}
+            />
+
+            {/* Individual memory dots (unclustered) */}
             <CircleLayer
               id="memory-circles"
+              filter={['!', ['has', 'point_count']] as any}
               style={{
                 circleRadius: [
                   'interpolate', ['linear'], ['zoom'],
                   2, 4,
                   6, 6,
                   10, 9,
-                  15, 12,
+                  15, 14,
                 ],
                 circleColor: SCORE_COLOR_EXPR,
                 circleStrokeWidth: [
@@ -319,6 +383,38 @@ export default function MapScreen() {
                 circleStrokeColor: '#FFFFFF',
                 circleSortKey: ['get', 'score'],
                 circlePitchAlignment: 'map',
+              }}
+            />
+            {/* Score inside the dot once it's big enough to carry it */}
+            <SymbolLayer
+              id="memory-scores"
+              filter={['!', ['has', 'point_count']] as any}
+              minZoomLevel={12}
+              style={{
+                textField: ['get', 'scoreLabel'],
+                textFont: ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+                textSize: ['interpolate', ['linear'], ['zoom'], 12, 8, 15, 10],
+                textColor: '#0B1120',
+                textAllowOverlap: true,
+                textIgnorePlacement: true,
+              }}
+            />
+            {/* Restaurant name under the dot at street zoom; labels
+                auto-hide instead of colliding in dense areas */}
+            <SymbolLayer
+              id="memory-names"
+              filter={['!', ['has', 'point_count']] as any}
+              minZoomLevel={13}
+              style={{
+                textField: ['get', 'name'],
+                textFont: ['DIN Pro Medium', 'Arial Unicode MS Regular'],
+                textSize: 11,
+                textColor: '#FFFFFF',
+                textHaloColor: 'rgba(0,0,0,0.85)',
+                textHaloWidth: 1.2,
+                textAnchor: 'top',
+                textOffset: [0, 1.1],
+                textMaxWidth: 8,
               }}
             />
           </ShapeSource>
