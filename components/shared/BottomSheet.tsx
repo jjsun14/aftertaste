@@ -1,31 +1,40 @@
 /**
  * Bottom sheet with swipe-down-anywhere dismissal.
  *
- * Built on react-native-gesture-handler because with the RN new
- * architecture (newArchEnabled), a JS PanResponder can never steal a
- * drag from a native ScrollView — the ScrollView's native recognizer
- * claims the touch first. RNGH arbitrates at the native level: the pan
- * runs simultaneously with the scroll, and we apply it only while the
- * scroll sits at the top (bounces are off, so the content can't fight
- * the sheet for the same downward drag).
+ * Gestures: react-native-gesture-handler, because with the RN new
+ * architecture a JS PanResponder can never steal a drag from a native
+ * ScrollView. Animation: reanimated shared values, so the drag math
+ * runs on the UI thread — no per-frame JS bridge hops, no stutter.
+ * The pan runs simultaneously with the scroll and only moves the
+ * sheet while the scroll sits at the top (bounces are off, so the
+ * content can't fight the sheet for the same downward drag).
  */
-import React, { useMemo, useRef } from 'react';
+import React from 'react';
 import {
   Modal,
   View,
   TouchableOpacity,
   KeyboardAvoidingView,
   Platform,
-  Animated,
   StyleSheet,
 } from 'react-native';
 import {
   GestureHandlerRootView,
   GestureDetector,
   Gesture,
-  ScrollView,
+  ScrollView as GHScrollView,
 } from 'react-native-gesture-handler';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  useAnimatedScrollHandler,
+  withSpring,
+  withTiming,
+  runOnJS,
+} from 'react-native-reanimated';
 import { Colors } from '@/theme/colors';
+
+const AnimatedScrollView = Animated.createAnimatedComponent(GHScrollView);
 
 interface BottomSheetProps {
   visible: boolean;
@@ -40,50 +49,55 @@ export default function BottomSheet({
   children,
   paddingBottom,
 }: BottomSheetProps) {
-  const sheetY = useRef(new Animated.Value(0)).current;
-  const scrollOffset = useRef(0);
-  // translationY at the moment the sheet-drag actually engages, so a
-  // scroll-up that continues into a pull-down doesn't make the sheet jump
-  const dragBase = useRef<number | null>(null);
+  const sheetY = useSharedValue(0);
+  const scrollOffset = useSharedValue(0);
+  // translationY at the moment the sheet-drag engages, so a scroll-up
+  // that continues into a pull-down doesn't make the sheet jump
+  const dragBase = useSharedValue(-1);
 
-  const dismiss = () => {
-    Animated.timing(sheetY, { toValue: 800, duration: 200, useNativeDriver: true }).start(() => {
-      sheetY.setValue(0);
-      onClose();
+  const finishClose = () => {
+    sheetY.value = 0;
+    onClose();
+  };
+
+  // Recreated each render on purpose — RNGH diffs gesture configs, and
+  // this keeps the worklets' captured callbacks fresh.
+  const scrollGesture = Gesture.Native();
+  const pan = Gesture.Pan()
+    .activeOffsetY(8)
+    .failOffsetX([-24, 24])
+    .simultaneousWithExternalGesture(scrollGesture)
+    .onChange((e) => {
+      if (scrollOffset.value <= 0) {
+        if (dragBase.value < 0) dragBase.value = e.translationY;
+        const dy = e.translationY - dragBase.value;
+        sheetY.value = dy > 0 ? dy : 0;
+      } else {
+        dragBase.value = -1;
+        if (sheetY.value !== 0) sheetY.value = 0;
+      }
+    })
+    .onEnd((e) => {
+      const dy = dragBase.value >= 0 ? e.translationY - dragBase.value : 0;
+      dragBase.value = -1;
+      if (dy > 80 || (e.velocityY > 500 && dy > 20)) {
+        sheetY.value = withTiming(900, { duration: 180 }, (finished) => {
+          if (finished) runOnJS(finishClose)();
+        });
+      } else {
+        sheetY.value = withSpring(0, { damping: 22, stiffness: 260, mass: 0.6 });
+      }
     });
-  };
-  const settle = () => {
-    Animated.spring(sheetY, { toValue: 0, useNativeDriver: true }).start();
-  };
 
-  const scrollGesture = useMemo(() => Gesture.Native(), []);
-  const pan = useMemo(
-    () =>
-      Gesture.Pan()
-        .runOnJS(true)
-        .activeOffsetY(8)
-        .failOffsetX([-24, 24])
-        .simultaneousWithExternalGesture(scrollGesture)
-        .onChange((e) => {
-          if (scrollOffset.current <= 0) {
-            if (dragBase.current === null) dragBase.current = e.translationY;
-            const dy = e.translationY - dragBase.current;
-            if (dy > 0) sheetY.setValue(dy);
-            else sheetY.setValue(0);
-          } else {
-            dragBase.current = null;
-            sheetY.setValue(0);
-          }
-        })
-        .onEnd((e) => {
-          const dy = dragBase.current !== null ? e.translationY - dragBase.current : 0;
-          dragBase.current = null;
-          if (dy > 80 || (e.velocityY > 500 && dy > 20)) dismiss();
-          else settle();
-        }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [scrollGesture],
-  );
+  const onScroll = useAnimatedScrollHandler({
+    onScroll: (e) => {
+      scrollOffset.value = e.contentOffset.y;
+    },
+  });
+
+  const sheetStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: sheetY.value }],
+  }));
 
   return (
     <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
@@ -93,23 +107,21 @@ export default function BottomSheet({
         <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose} />
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <GestureDetector gesture={pan}>
-            <Animated.View style={[styles.sheet, { transform: [{ translateY: sheetY }] }]}>
+            <Animated.View style={[styles.sheet, sheetStyle]}>
               <View style={styles.dragArea}>
                 <View style={styles.sheetHandle} />
               </View>
               <GestureDetector gesture={scrollGesture}>
-                <ScrollView
+                <AnimatedScrollView
                   showsVerticalScrollIndicator={false}
                   keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingBottom }}
                   bounces={false}
-                  onScroll={(e) => {
-                    scrollOffset.current = e.nativeEvent.contentOffset.y;
-                  }}
+                  onScroll={onScroll}
                   scrollEventThrottle={16}
                 >
                   {children}
-                </ScrollView>
+                </AnimatedScrollView>
               </GestureDetector>
               {/* Solid colour block that fills the bounce-zone below the sheet */}
               <View style={styles.sheetBottomFill} />
