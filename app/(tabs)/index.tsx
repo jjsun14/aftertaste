@@ -14,7 +14,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Mapbox, { MapView, Camera, ShapeSource, CircleLayer, SymbolLayer, MarkerView, LocationPuck } from '@rnmapbox/maps';
 import * as Location from 'expo-location';
-import { Colors } from '@/theme/colors';
+import { Colors, getScoreColor } from '@/theme/colors';
 import { useMemories, useWantToTry } from '@/context/DataContext';
 import type { Memory, WantToTryEntry } from '@/data/mockData';
 import ScoreBadge from '@/components/shared/ScoreBadge';
@@ -98,6 +98,63 @@ function selectedGeoJSON(memory: Memory): GeoJSON.FeatureCollection {
   };
 }
 
+// ── City chips: far-zoom view (below CHIP_ZOOM, pins are replaced by
+// named per-metro chips — "Miami · 27" — colored by average score) ──
+const CHIP_ZOOM = 6;
+
+interface CityChip {
+  key: string;
+  label: string;
+  count: number;
+  avgScore: number;
+  center: [number, number];
+  bounds: { ne: [number, number]; sw: [number, number] };
+}
+
+function buildCityChips(memories: Memory[]): CityChip[] {
+  // ~1.5° grid merges suburbs into one metro chip (Davie + Miami + Boca
+  // become one), while separate trips stay separate.
+  const groups = new Map<string, Memory[]>();
+  for (const m of memories) {
+    if (!m.latitude || !m.longitude) continue;
+    const key = `${Math.round(m.latitude / 1.5)}:${Math.round(m.longitude / 1.5)}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(m);
+    else groups.set(key, [m]);
+  }
+
+  return [...groups.entries()].map(([key, ms]) => {
+    // Label: the most common city name in the group
+    const freq = new Map<string, number>();
+    for (const m of ms) {
+      if (m.city) freq.set(m.city, (freq.get(m.city) ?? 0) + 1);
+    }
+    let label = '';
+    let best = 0;
+    for (const [city, n] of freq) {
+      if (n > best) { label = city; best = n; }
+    }
+    if (!label) label = ms[0].state || '';
+
+    const lats = ms.map((m) => m.latitude);
+    const lngs = ms.map((m) => m.longitude);
+    return {
+      key,
+      label,
+      count: ms.length,
+      avgScore: ms.reduce((s, m) => s + m.compositeScore, 0) / ms.length,
+      center: [
+        lngs.reduce((a, b) => a + b, 0) / lngs.length,
+        lats.reduce((a, b) => a + b, 0) / lats.length,
+      ] as [number, number],
+      bounds: {
+        ne: [Math.max(...lngs), Math.max(...lats)] as [number, number],
+        sw: [Math.min(...lngs), Math.min(...lats)] as [number, number],
+      },
+    };
+  });
+}
+
 // Default center: continental US
 const DEFAULT_CENTER: [number, number] = [-98.5795, 39.8283];
 const DEFAULT_ZOOM = 3.5;
@@ -114,6 +171,7 @@ export default function MapScreen() {
   const [locating, setLocating] = useState(false);
   const [didInitialFit, setDidInitialFit] = useState(false);
   const [wttBucket, setWttBucket] = useState(() => zoomToBucket(DEFAULT_ZOOM));
+  const [farView, setFarView] = useState(DEFAULT_ZOOM < CHIP_ZOOM);
   const [mapReady, setMapReady] = useState(false);
 
   // Request location permission on mount so the user puck appears
@@ -129,6 +187,7 @@ export default function MapScreen() {
   }, []);
 
   const geojson = useMemo(() => memoriesToGeoJSON(memories), [memories]);
+  const cityChips = useMemo(() => buildCityChips(memories), [memories]);
   const uniqueCities = useMemo(
     () => new Set(memories.map(m => m.city).filter(Boolean)).size,
     [memories]
@@ -247,12 +306,31 @@ export default function MapScreen() {
     [memories]
   );
 
-  // ── Track zoom for want-to-try pin sizing (discrete buckets) ──
+  // ── Track zoom for want-to-try pin sizing (discrete buckets)
+  //    and for the far-zoom city-chip view ──
   const handleCameraChanged = useCallback((state: any) => {
     const zoom = state.properties?.zoom;
     if (zoom == null) return;
     const bucket = zoomToBucket(zoom);
     setWttBucket((prev) => (prev !== bucket ? bucket : prev));
+    const far = zoom < CHIP_ZOOM;
+    setFarView((prev) => (prev !== far ? far : prev));
+  }, []);
+
+  // ── Tap a city chip → fly into that city ──
+  const handleChipPress = useCallback((chip: CityChip) => {
+    setSelectedMemory(null);
+    setSelectedWtt(null);
+    if (chip.count === 1) {
+      cameraRef.current?.setCamera({
+        centerCoordinate: chip.center,
+        zoomLevel: 12,
+        animationDuration: 700,
+        animationMode: 'flyTo',
+      });
+    } else {
+      cameraRef.current?.fitBounds(chip.bounds.ne, chip.bounds.sw, [80, 80, 80, 80], 700);
+    }
   }, []);
 
   // ── My location button ──
@@ -329,6 +407,7 @@ export default function MapScreen() {
                 Tight radius means these only appear where dots overlap. */}
             <CircleLayer
               id="cluster-ring"
+              minZoomLevel={CHIP_ZOOM}
               filter={['has', 'point_count'] as any}
               style={{
                 // Zoom-scaled so continent view gets compact circles
@@ -344,6 +423,7 @@ export default function MapScreen() {
             />
             <CircleLayer
               id="cluster-circles"
+              minZoomLevel={CHIP_ZOOM}
               filter={['has', 'point_count'] as any}
               style={{
                 circleRadius: [
@@ -359,6 +439,7 @@ export default function MapScreen() {
             />
             <SymbolLayer
               id="cluster-counts"
+              minZoomLevel={CHIP_ZOOM}
               filter={['has', 'point_count'] as any}
               style={{
                 textField: ['get', 'point_count_abbreviated'],
@@ -373,6 +454,7 @@ export default function MapScreen() {
             {/* Individual memory dots (unclustered) */}
             <CircleLayer
               id="memory-circles"
+              minZoomLevel={CHIP_ZOOM}
               filter={['!', ['has', 'point_count']] as any}
               style={{
                 circleRadius: [
@@ -429,8 +511,9 @@ export default function MapScreen() {
           </ShapeSource>
         )}
 
-        {/* ── Want to try pins (purple + bookmark — zoom-responsive sizing) ── */}
-        {wantToTryEntries
+        {/* ── Want to try pins (purple + bookmark — zoom-responsive sizing;
+               hidden at far zoom where city chips take over) ── */}
+        {!farView && wantToTryEntries
           .filter((e) => e.latitude && e.longitude)
           .map((entry) => (
             <MarkerView
@@ -462,6 +545,29 @@ export default function MapScreen() {
                 }}
               >
                 <Ionicons name="bookmark" size={wttSize.icon} color="#FFFFFF" />
+              </TouchableOpacity>
+            </MarkerView>
+          ))}
+
+        {/* ── City chips (far zoom only — replace the pin layers) ── */}
+        {farView &&
+          cityChips.map((chip) => (
+            <MarkerView
+              key={chip.key}
+              coordinate={chip.center}
+              anchor={{ x: 0.5, y: 0.5 }}
+              allowOverlapWithPuck
+            >
+              <TouchableOpacity
+                style={styles.cityChip}
+                activeOpacity={0.85}
+                onPress={() => handleChipPress(chip)}
+              >
+                <View
+                  style={[styles.cityChipDot, { backgroundColor: getScoreColor(chip.avgScore) }]}
+                />
+                {!!chip.label && <Text style={styles.cityChipName}>{chip.label}</Text>}
+                <Text style={styles.cityChipCount}>{chip.count}</Text>
               </TouchableOpacity>
             </MarkerView>
           ))}
@@ -736,6 +842,38 @@ const styles = StyleSheet.create({
   },
   cardRight: {
     alignItems: 'center',
+  },
+  // ── City chips (far zoom) ──
+  cityChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(20, 27, 45, 0.92)',
+    borderWidth: 1,
+    borderColor: Colors.surfaceBorderLight,
+    borderRadius: 20,
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 5,
+  },
+  cityChipDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  cityChipName: {
+    color: Colors.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  cityChipCount: {
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
   },
   wttPin: {
     backgroundColor: Colors.purple,
