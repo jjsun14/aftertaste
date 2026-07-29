@@ -19,6 +19,51 @@ export function storagePathFromUrl(value: string): string | null {
   return null;
 }
 
+/** Synchronous cache lookup — null when a mint is needed. */
+export function peekSignedPhotoUrl(stored: string): string | null {
+  const path = storagePathFromUrl(stored);
+  if (!path) return stored;
+  const hit = cache.get(path);
+  return hit && hit.expiresAt > Date.now() + 60_000 ? hit.url : null;
+}
+
+/**
+ * Mint signed URLs for many photos in ONE api call and warm the cache —
+ * called right after memories load, so cards resolve synchronously
+ * instead of each paying its own round trip.
+ */
+export async function prefetchSignedPhotoUrls(storedValues: string[]): Promise<void> {
+  const paths = [
+    ...new Set(
+      storedValues
+        .map(storagePathFromUrl)
+        .filter((p): p is string => !!p),
+    ),
+  ];
+  const missing = paths.filter((p) => {
+    const hit = cache.get(p);
+    return !hit || hit.expiresAt <= Date.now() + 60_000;
+  });
+  if (missing.length === 0) return;
+
+  try {
+    const { data, error } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUrls(missing, TTL_SECONDS);
+    if (error || !data) return;
+    for (const item of data) {
+      if (item.signedUrl && item.path) {
+        cache.set(item.path, {
+          url: item.signedUrl,
+          expiresAt: Date.now() + TTL_SECONDS * 1000,
+        });
+      }
+    }
+  } catch {
+    // cards fall back to per-photo minting
+  }
+}
+
 /**
  * Resolve a stored photo value to a renderable URL. Cached per path for
  * the signed URL's lifetime; falls back to the stored value on failure

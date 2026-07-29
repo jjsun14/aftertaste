@@ -8,6 +8,7 @@
  */
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { prefetchSignedPhotoUrls } from '@/lib/signedPhotos';
 import { useAuth } from '@/context/AuthContext';
 import type { Memory, Visit, WantToTryEntry, ImportQueueItem, RatingLevel, EateryType } from '@/data/mockData';
 import { computeComposite, ratingToScore, determineTier, recalculateTierScores } from '@/data/mockData';
@@ -211,7 +212,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
         .order('date', { ascending: false });
       if (error) throw error;
 
-      setMemories((data ?? []).map(rowToMemory));
+      const loaded = (data ?? []).map(rowToMemory);
+      setMemories(loaded);
+
+      // Warm the signed-URL cache in ONE api call so photo cards render
+      // without each paying its own round trip (fire-and-forget).
+      const allPhotos = loaded.flatMap((m) => [
+        ...m.photos,
+        ...m.visits.map((v) => v.photo).filter((p): p is string => !!p),
+      ]);
+      prefetchSignedPhotoUrls(allPhotos);
     } catch (err: any) {
       setMemoriesError(err.message);
     } finally {
